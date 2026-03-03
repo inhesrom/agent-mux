@@ -1,6 +1,7 @@
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
@@ -11,12 +12,55 @@ use crate::ui::widgets::tile_grid;
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(5), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(2),
+        ])
         .split(area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "multiws ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("command center"),
+            Span::raw("    / filter   n new   D delete   Enter open"),
+        ]))
+        .block(Block::default().borders(Borders::BOTTOM)),
+        chunks[0],
+    );
+
+    let needs_input = app
+        .workspaces
+        .iter()
+        .filter(|w| matches!(w.attention, protocol::AttentionLevel::NeedsInput))
+        .count();
+    let errors = app
+        .workspaces
+        .iter()
+        .filter(|w| matches!(w.attention, protocol::AttentionLevel::Error))
+        .count();
+    let dirty = app.workspaces.iter().map(|w| w.dirty_files).sum::<usize>();
+    let running_agents = app.workspaces.iter().filter(|w| w.agent_running).count();
+    let stats = format!(
+        "Needs Input: {}   Errors: {}   Dirty Files: {}   Running Agents: {}",
+        needs_input, errors, dirty, running_agents
+    );
+    frame.render_widget(
+        Paragraph::new(stats)
+            .style(Style::default().fg(Color::Yellow))
+            .block(Block::default().title("Status").borders(Borders::BOTTOM)),
+        chunks[1],
+    );
 
     tile_grid::render(
         frame,
-        chunks[0],
+        chunks[2],
         &app.workspaces,
         app.home_selected,
         app.flash_on,
@@ -27,7 +71,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         Paragraph::new(footer)
             .block(Block::default().borders(Borders::TOP))
             .style(Style::default().fg(Color::Gray)),
-        chunks[1],
+        chunks[3],
     );
 
     if let Some(path_input) = &app.add_workspace_path_input {

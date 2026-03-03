@@ -15,6 +15,7 @@ use tokio::sync::{broadcast, mpsc};
 use protocol::{AttentionLevel, Command, Event, WorkspaceSummary};
 use state::{AppState, Workspace};
 use uuid::Uuid;
+use workspace::attention::{append_recent_output, detect_needs_input_text};
 use workspace::git::{diff_file, refresh_git};
 use workspace::terminal::{start_terminal, TerminalOutput};
 
@@ -26,6 +27,7 @@ pub struct CoreHandle {
 
 pub fn spawn_core() -> CoreHandle {
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(256);
+    let cmd_tx_internal = cmd_tx.clone();
     let (evt_tx, _) = broadcast::channel::<Event>(256);
     let evt_tx_task = evt_tx.clone();
 
@@ -174,11 +176,63 @@ pub fn spawn_core() -> CoreHandle {
                                 });
 
                                 let evt_tx_outputs = evt_tx_task.clone();
+                                let cmd_tx_outputs = cmd_tx_internal.clone();
                                 let out_tab_id = tid.clone();
                                 tokio::spawn(async move {
-                                    while let Some(out) = out_rx.recv().await {
+                                    let mut recent_agent_output = String::new();
+                                    let mut idle_armed = false;
+                                    let mut idle_triggered = false;
+                                    const AGENT_IDLE_NEEDS_INPUT_SECS: u64 = 10;
+
+                                    loop {
+                                        let out = if matches!(kind, protocol::TerminalKind::Agent)
+                                            && idle_armed
+                                        {
+                                            tokio::select! {
+                                                maybe_out = out_rx.recv() => maybe_out,
+                                                _ = tokio::time::sleep(Duration::from_secs(AGENT_IDLE_NEEDS_INPUT_SECS)) => {
+                                                    idle_armed = false;
+                                                    idle_triggered = true;
+                                                    let _ = cmd_tx_outputs
+                                                        .send(Command::SetAttention {
+                                                            id,
+                                                            level: AttentionLevel::NeedsInput,
+                                                        })
+                                                        .await;
+                                                    continue;
+                                                }
+                                            }
+                                        } else {
+                                            out_rx.recv().await
+                                        };
+
+                                        let Some(out) = out else { break; };
+
                                         match out {
                                             TerminalOutput::Bytes(bytes) => {
+                                                if matches!(kind, protocol::TerminalKind::Agent) {
+                                                    if idle_triggered {
+                                                        let _ = cmd_tx_outputs
+                                                            .send(Command::ClearAttention { id })
+                                                            .await;
+                                                        idle_triggered = false;
+                                                    }
+
+                                                    append_recent_output(
+                                                        &mut recent_agent_output,
+                                                        &bytes,
+                                                    );
+                                                    if detect_needs_input_text(&recent_agent_output)
+                                                    {
+                                                        let _ = cmd_tx_outputs
+                                                            .send(Command::SetAttention {
+                                                                id,
+                                                                level: AttentionLevel::NeedsInput,
+                                                            })
+                                                            .await;
+                                                    }
+                                                    idle_armed = true;
+                                                }
                                                 let data_b64 =
                                                     base64::engine::general_purpose::STANDARD
                                                         .encode(bytes);
@@ -248,6 +302,15 @@ pub fn spawn_core() -> CoreHandle {
                                 base64::engine::general_purpose::STANDARD.decode(data_b64)
                             {
                                 let _ = session.send_input(&bytes).await;
+                                if matches!(kind, protocol::TerminalKind::Agent)
+                                    && ws.attention == AttentionLevel::NeedsInput
+                                {
+                                    ws.attention = AttentionLevel::None;
+                                    let _ = evt_tx_task.send(Event::WorkspaceAttentionChanged {
+                                        id,
+                                        level: AttentionLevel::None,
+                                    });
+                                }
                             }
                         }
                     }
@@ -350,7 +413,30 @@ struct PersistedWorkspace {
 
 fn persist_file() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".config/multiws/workspaces.json"))
+    let base = PathBuf::from(home).join(".config/multiws");
+    let file = if let Ok(session) = std::env::var("MULTIWS_SESSION_NAME") {
+        let safe = sanitize_session_name(&session);
+        format!("workspaces.{safe}.json")
+    } else {
+        "workspaces.json".to_string()
+    };
+    Some(base.join(file))
+}
+
+fn sanitize_session_name(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return "default".to_string();
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for c in trimmed.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    out
 }
 
 fn save_workspaces(state: &AppState) {

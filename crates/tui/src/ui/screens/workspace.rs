@@ -31,7 +31,11 @@ struct WorkspaceLayout {
 fn layout(area: Rect, focus: crate::app::Focus) -> WorkspaceLayout {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(5), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(2),
+        ])
         .split(area);
     let body = Layout::default()
         .direction(Direction::Vertical)
