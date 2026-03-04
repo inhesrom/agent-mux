@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 
@@ -71,13 +71,21 @@ fn layout(area: Rect, focus: crate::app::Focus) -> WorkspaceLayout {
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let l = layout(area, app.focus);
 
-    let focused_border = |focused: bool| {
+    let focused_border = |focused: bool| -> (Style, BorderType) {
         if focused {
-            Style::default()
-                .fg(Color::LightCyan)
-                .add_modifier(Modifier::BOLD)
+            (
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
+                BorderType::Thick,
+            )
         } else {
-            Style::default()
+            (
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::DIM),
+                BorderType::Plain,
+            )
         }
     };
 
@@ -90,6 +98,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         .map(|w| format!("Workspace: {} ({})", w.name, w.path))
         .unwrap_or_else(|| "Workspace".to_string());
 
+    let (header_style, header_border_type) =
+        focused_border(app.focus == crate::app::Focus::WsHeader);
     frame.render_widget(
         Paragraph::new(if let Some(name) = &app.rename_workspace_input {
             format!("{title}\nRename: {name}")
@@ -99,7 +109,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(focused_border(app.focus == crate::app::Focus::WsHeader)),
+                .border_style(header_style)
+                .border_type(header_border_type),
         ),
         l.header,
     );
@@ -116,17 +127,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         .iter()
         .map(|f| ListItem::new(format!("{:>2} {}", f.status, f.path)))
         .collect::<Vec<_>>();
+    let (files_style, files_border_type) =
+        focused_border(app.focus == crate::app::Focus::WsFiles);
     let file_list = List::new(file_items)
         .block(
             Block::default()
                 .title("Changed Files")
                 .borders(Borders::ALL)
-                .border_style(focused_border(app.focus == crate::app::Focus::WsFiles)),
+                .border_style(files_style)
+                .border_type(files_border_type),
         )
         .highlight_style(
             Style::default()
                 .fg(Color::Black)
-                .bg(Color::Cyan)
+                .bg(Color::Blue)
                 .add_modifier(Modifier::BOLD),
         );
     frame.render_stateful_widget(file_list, l.git_files, &mut list_state);
@@ -153,13 +167,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             }
         })
         .collect::<Vec<_>>();
+    let (diff_style, diff_border_type) =
+        focused_border(app.focus == crate::app::Focus::WsDiff);
     frame.render_widget(
         Paragraph::new(diff_lines)
             .block(
                 Block::default()
                     .title("Diff")
                     .borders(Borders::ALL)
-                    .border_style(focused_border(app.focus == crate::app::Focus::WsDiff)),
+                    .border_style(diff_style)
+                    .border_type(diff_border_type),
             )
             .scroll((app.ws_diff_scroll, 0))
             .wrap(Wrap { trim: false }),
@@ -179,9 +196,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 .collect::<Vec<_>>(),
         )
         .split(l.terminal_tabs);
-    let tabs_focused = app.focus == crate::app::Focus::WsTerminalTabs;
     let selected_style = Style::default()
-        .fg(Color::LightGreen)
+        .fg(Color::Blue)
         .add_modifier(Modifier::BOLD);
     for (i, tab) in app.ws_tabs.iter().enumerate() {
         let running = match tab.kind {
@@ -196,6 +212,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         } else {
             tab.label.clone()
         };
+        let (tab_style, tab_border_type) = if i == app.ws_active_tab {
+            (selected_style, BorderType::Thick)
+        } else {
+            (Style::default().add_modifier(Modifier::DIM), BorderType::Plain)
+        };
         frame.render_widget(
             Paragraph::new(format!(
                 "{}\n{}\n[h/l] [n new] [x close] [r rename]",
@@ -206,11 +227,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 Block::default()
                     .title(format!("{}", i + 1))
                     .borders(Borders::ALL)
-                    .border_style(if i == app.ws_active_tab {
-                        selected_style
-                    } else {
-                        focused_border(tabs_focused)
-                    }),
+                    .border_style(tab_style)
+                    .border_type(tab_border_type),
             ),
             tab_rects[i],
         );
@@ -219,13 +237,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let terminal_lines = ws_id
         .map(|id| app.terminal_lines(id, &app.active_tab_id()))
         .unwrap_or_else(|| vec![Line::from("No terminal output yet.")]);
+    let (term_style, term_border_type) =
+        focused_border(app.focus == crate::app::Focus::WsTerminal);
     frame.render_widget(Clear, l.terminal_pane);
     frame.render_widget(
         Paragraph::new(terminal_lines).block(
             Block::default()
                 .title("Terminal")
                 .borders(Borders::ALL)
-                .border_style(focused_border(app.focus == crate::app::Focus::WsTerminal)),
+                .border_style(term_style)
+                .border_type(term_border_type),
         ),
         l.terminal_pane,
     );
