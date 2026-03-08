@@ -44,7 +44,7 @@ fn render_dashboard(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let art_style = Style::default().fg(Color::Cyan);
 
     let mut badge_line_spans = vec![
-        Span::styled(" \u{2588}\u{2580}\u{2588} \u{2588}\u{2584} \u{2588} \u{2588}   \u{2588} \u{2588}     ", art_style),
+        Span::styled(" \u{2588}\u{2580}\u{2588} \u{2588} \u{2580}\u{2588}  \u{2580}\u{2584}\u{2580}  \u{2588}\u{2584}\u{2584}   ", art_style),
     ];
     badge_line_spans.extend(badge_spans);
 
