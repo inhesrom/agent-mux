@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
 };
 
-pub const TILE_W: u16 = 56;
+const COLS: u16 = 3;
 pub const TILE_H: u16 = 9;
 pub const ORANGE: Color = Color::Rgb(255, 165, 0);
 
@@ -28,9 +28,10 @@ pub fn render(
         return;
     }
 
-    let cols = (area.width / TILE_W).max(1) as usize;
+    let tile_w = area.width / COLS;
+    let cols = COLS as usize;
     for (i, ws) in items.iter().enumerate() {
-        let tile = tile_rect(area, i, cols);
+        let tile = tile_rect(area, i, cols, tile_w);
         if tile.width < 8 || tile.height < 9 {
             continue;
         }
@@ -49,8 +50,9 @@ pub fn index_at(area: Rect, x: u16, y: u16, item_count: usize) -> Option<usize> 
     }
     let rel_x = x - area.x;
     let rel_y = y - area.y;
-    let cols = (area.width / TILE_W).max(1) as usize;
-    let col = (rel_x / TILE_W) as usize;
+    let tile_w = area.width / COLS;
+    let cols = COLS as usize;
+    let col = (rel_x / tile_w) as usize;
     let row = (rel_y / TILE_H) as usize;
     let idx = row * cols + col;
     (idx < item_count).then_some(idx)
@@ -70,13 +72,13 @@ fn render_empty_state(frame: &mut Frame, area: Rect) {
 }
 
 /// Computes the `Rect` for tile at grid position `index` given `cols` columns.
-fn tile_rect(area: Rect, index: usize, cols: usize) -> Rect {
+fn tile_rect(area: Rect, index: usize, cols: usize, tile_w: u16) -> Rect {
     let row = index / cols;
     let col = index % cols;
     Rect {
-        x: area.x + (col as u16 * TILE_W),
+        x: area.x + (col as u16 * tile_w),
         y: area.y + (row as u16 * TILE_H),
-        width: TILE_W.min(area.width.saturating_sub(col as u16 * TILE_W)),
+        width: tile_w.min(area.width.saturating_sub(col as u16 * tile_w)),
         height: TILE_H.min(area.height.saturating_sub(row as u16 * TILE_H)),
     }
 }
@@ -103,7 +105,8 @@ fn render_tile(
             .add_modifier(Modifier::BOLD),
     ));
     let title_right = build_status_badge(&ws.attention, flash_on, attention_enabled);
-    let body_lines = build_body_lines(ws);
+    let body_max = (tile.width as usize).saturating_sub(6);
+    let body_lines = build_body_lines(ws, body_max);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -184,11 +187,11 @@ fn build_status_badge(attention: &AttentionLevel, flash_on: bool, attention_enab
 ///
 /// The count is fixed at 7 to fill `TILE_H - 2` rows (tile height minus
 /// the top and bottom border lines).
-fn build_body_lines(ws: &WorkspaceSummary) -> Vec<Line<'static>> {
+fn build_body_lines(ws: &WorkspaceSummary, body_max: usize) -> Vec<Line<'static>> {
     vec![
         Line::from(""),
-        build_branch_line(ws),
-        build_path_line(ws),
+        build_branch_line(ws, body_max),
+        build_path_line(ws, body_max),
         Line::from(""),
         build_stats_line(ws),
         Line::from(""),
@@ -196,10 +199,7 @@ fn build_body_lines(ws: &WorkspaceSummary) -> Vec<Line<'static>> {
     ]
 }
 
-/// Max text width inside a tile: TILE_W minus 2 border columns and 4 icon-prefix columns.
-const BODY_TEXT_MAX: usize = (TILE_W as usize) - 6;
-
-fn build_branch_line(ws: &WorkspaceSummary) -> Line<'static> {
+fn build_branch_line(ws: &WorkspaceSummary, body_max: usize) -> Line<'static> {
     let branch = ws.branch.as_deref().unwrap_or("-");
     let ab = match (ws.ahead, ws.behind) {
         (Some(a), Some(b)) if a == 0 && b == 0 => " =".to_string(),
@@ -223,18 +223,18 @@ fn build_branch_line(ws: &WorkspaceSummary) -> Line<'static> {
     Line::from(vec![
         Span::styled("  ⎇ ", dim_style()),
         Span::styled(
-            truncate_end(branch, BODY_TEXT_MAX.saturating_sub(ab.len())),
+            truncate_end(branch, body_max.saturating_sub(ab.len())),
             Style::default().fg(Color::White),
         ),
         Span::styled(ab, ab_style),
     ])
 }
 
-fn build_path_line(ws: &WorkspaceSummary) -> Line<'static> {
+fn build_path_line(ws: &WorkspaceSummary, body_max: usize) -> Line<'static> {
     let dim = dim_style();
     Line::from(vec![
         Span::styled("  ", dim),
-        Span::styled(truncate_end(&ws.path, BODY_TEXT_MAX), dim),
+        Span::styled(truncate_end(&ws.path, body_max), dim),
     ])
 }
 
