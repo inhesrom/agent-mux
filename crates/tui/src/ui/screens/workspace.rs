@@ -135,37 +135,6 @@ pub fn pane_border_style(
     }
 }
 
-/// Returns the border style for a terminal tab, accounting for attention state and selection.
-fn tab_border_style(
-    is_active: bool,
-    is_agent: bool,
-    attention: AttentionLevel,
-    flash_on: bool,
-    selected_style: Style,
-) -> (Style, BorderType) {
-    if is_active
-        && is_agent
-        && matches!(attention, AttentionLevel::NeedsInput | AttentionLevel::Error)
-        && flash_on
-    {
-        let color = match attention {
-            AttentionLevel::Error => Color::Red,
-            _ => ORANGE,
-        };
-        (
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-            BorderType::Thick,
-        )
-    } else if is_active {
-        (selected_style, BorderType::Thick)
-    } else {
-        (
-            Style::default().add_modifier(Modifier::DIM),
-            BorderType::Plain,
-        )
-    }
-}
-
 /// Builds the title `Line` for the terminal pane, with an optional attention badge.
 pub fn build_terminal_title_line(attention: AttentionLevel, flash_on: bool) -> Line<'static> {
     match attention {
@@ -566,6 +535,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let (agent_running, shell_running) = ws_summary
         .map(|w| (w.agent_running, w.shell_running))
         .unwrap_or((false, false));
+    let (tabs_border_style, tabs_border_type) =
+        standard_border_style(app.focus == crate::app::Focus::WsTerminalTabs);
+    let tabs_block = Block::default()
+        .title("Tabs")
+        .borders(Borders::ALL)
+        .border_style(tabs_border_style)
+        .border_type(tabs_border_type);
+    let tabs_inner = tabs_block.inner(l.terminal_tabs);
+    frame.render_widget(tabs_block, l.terminal_tabs);
+
     let tab_rects = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(
@@ -574,10 +553,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 .map(|_| Constraint::Ratio(1, app.ws_tabs.len().max(1) as u32))
                 .collect::<Vec<_>>(),
         )
-        .split(l.terminal_tabs);
-    let selected_style = Style::default()
-        .fg(Color::Blue)
-        .add_modifier(Modifier::BOLD);
+        .split(tabs_inner);
     for (i, tab) in app.ws_tabs.iter().enumerate() {
         let running = match tab.kind {
             protocol::TerminalKind::Agent => agent_running,
@@ -591,29 +567,42 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         } else {
             tab.label.clone()
         };
+        let is_active = i == app.ws_active_tab;
         let is_agent = matches!(tab.kind, protocol::TerminalKind::Agent);
-        let (tab_style, tab_border_type) = tab_border_style(
-            i == app.ws_active_tab,
-            is_agent,
-            attention,
-            app.flash_on,
-            selected_style,
-        );
-        frame.render_widget(
-            Paragraph::new(format!(
-                "{}\n{}\n[h/l] [n new] [x close] [r rename]",
-                label,
-                if running { "running" } else { "stopped" }
-            ))
-            .block(
-                Block::default()
-                    .title(format!("{}", i + 1))
-                    .borders(Borders::ALL)
-                    .border_style(tab_style)
-                    .border_type(tab_border_type),
-            ),
-            tab_rects[i],
-        );
+        let (border_style, border_type) = if is_active
+            && is_agent
+            && matches!(attention, AttentionLevel::NeedsInput | AttentionLevel::Error)
+            && app.flash_on
+        {
+            let color = match attention {
+                AttentionLevel::Error => Color::Red,
+                _ => ORANGE,
+            };
+            (
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                BorderType::Thick,
+            )
+        } else if is_active {
+            (
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
+                BorderType::Thick,
+            )
+        } else {
+            (
+                Style::default().add_modifier(Modifier::DIM),
+                BorderType::Plain,
+            )
+        };
+        let status = if running { "run" } else { "stop" };
+        let content = Line::from(format!("{label} {status}"));
+        let tab_block = Block::default()
+            .title(format!("{}", i + 1))
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .border_type(border_type);
+        frame.render_widget(Paragraph::new(content).block(tab_block), tab_rects[i]);
     }
 
     // --- Terminal Pane ---
