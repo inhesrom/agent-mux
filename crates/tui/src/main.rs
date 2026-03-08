@@ -400,33 +400,89 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     _ => {}
                                 }
                             } else if app.is_adding_workspace() {
-                                match key.code {
-                                    KeyCode::Esc => app.cancel_add_workspace(),
-                                    KeyCode::Enter => {
-                                        if let Some((name, path)) = app.take_add_workspace_request()
-                                        {
-                                            let _ = backend
-                                                .cmd_tx
-                                                .send(Command::AddWorkspace { name, path })
-                                                .await;
+                                let editing = app.dir_browser.as_ref().map_or(false, |b| b.editing_path);
+                                if editing {
+                                    match key.code {
+                                        KeyCode::Esc => app.cancel_add_workspace(),
+                                        KeyCode::Enter => {
+                                            if let Some(browser) = app.dir_browser_mut() {
+                                                browser.confirm_path_edit();
+                                            }
                                         }
-                                    }
-                                    KeyCode::Backspace => {
-                                        if let Some(input) = app.add_workspace_input_mut() {
-                                            input.pop();
+                                        KeyCode::Backspace => {
+                                            if let Some(browser) = app.dir_browser_mut() {
+                                                browser.path_input.pop();
+                                            }
                                         }
-                                    }
-                                    KeyCode::Tab => {
-                                        if let Some(input) = app.add_workspace_input_mut() {
-                                            apply_path_autocomplete(input);
+                                        KeyCode::Tab => {
+                                            if let Some(browser) = app.dir_browser_mut() {
+                                                apply_path_autocomplete(&mut browser.path_input);
+                                                browser.confirm_path_edit();
+                                            }
                                         }
-                                    }
-                                    KeyCode::Char(c) => {
-                                        if let Some(input) = app.add_workspace_input_mut() {
-                                            input.push(c);
+                                        KeyCode::Char(c) => {
+                                            if let Some(browser) = app.dir_browser_mut() {
+                                                browser.path_input.push(c);
+                                            }
                                         }
+                                        _ => {}
                                     }
-                                    _ => {}
+                                } else {
+                                    match key.code {
+                                        KeyCode::Esc => app.cancel_add_workspace(),
+                                        KeyCode::Char('j') | KeyCode::Down => {
+                                            if let Some(browser) = app.dir_browser_mut() {
+                                                browser.move_selection(1);
+                                            }
+                                        }
+                                        KeyCode::Char('k') | KeyCode::Up => {
+                                            if let Some(browser) = app.dir_browser_mut() {
+                                                browser.move_selection(-1);
+                                            }
+                                        }
+                                        KeyCode::Enter => {
+                                            if let Some(browser) = app.dir_browser_mut() {
+                                                browser.enter_selected();
+                                            }
+                                        }
+                                        KeyCode::Backspace => {
+                                            if let Some(browser) = app.dir_browser_mut() {
+                                                browser.go_up();
+                                            }
+                                        }
+                                        KeyCode::Char('.') => {
+                                            if let Some(browser) = app.dir_browser_mut() {
+                                                browser.toggle_hidden();
+                                            }
+                                        }
+                                        KeyCode::Char('/') => {
+                                            if let Some(browser) = app.dir_browser_mut() {
+                                                browser.begin_path_edit();
+                                            }
+                                        }
+                                        KeyCode::Tab => {
+                                            if let Some((name, path)) = app.take_add_workspace_request()
+                                            {
+                                                let _ = backend
+                                                    .cmd_tx
+                                                    .send(Command::AddWorkspace { name, path })
+                                                    .await;
+                                            }
+                                        }
+                                        KeyCode::Char(' ') => {
+                                            let child_path = app.dir_browser.as_ref().and_then(|b| b.selected_child_path());
+                                            if let Some(path) = child_path {
+                                                if let Some((name, path)) = app.take_add_workspace_request_with_path(path)
+                                                {
+                                                    let _ = backend
+                                                        .cmd_tx
+                                                        .send(Command::AddWorkspace { name, path })
+                                                        .await;
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
                                 }
                             } else if app.is_renaming_workspace() {
                                 match key.code {

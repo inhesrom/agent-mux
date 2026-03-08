@@ -12,6 +12,121 @@ use serde::{Deserialize, Serialize};
 
 use crate::ui::widgets::tile_grid;
 
+/// Tracks the state of the interactive directory browser shown when adding a workspace.
+pub struct DirBrowserState {
+    /// The filesystem path currently shown in the browser.
+    pub path_input: String,
+    /// Sorted list of subdirectory names at `path_input`.
+    pub entries: Vec<String>,
+    /// Index of the currently highlighted entry.
+    pub selected: usize,
+    /// Whether hidden (dot-prefixed) directories are shown.
+    pub show_hidden: bool,
+    /// Whether the user is currently typing in the path input field.
+    pub editing_path: bool,
+}
+
+impl DirBrowserState {
+    /// Creates a new browser rooted at `initial_path` and immediately populates entries.
+    pub fn new(initial_path: String) -> Self {
+        let mut state = Self {
+            path_input: initial_path,
+            entries: Vec::new(),
+            selected: 0,
+            show_hidden: false,
+            editing_path: false,
+        };
+        state.refresh_entries();
+        state
+    }
+
+    /// Re-reads `path_input` from disk and repopulates entries, clamping selection.
+    pub fn refresh_entries(&mut self) {
+        self.entries.clear();
+        let path = Path::new(&self.path_input);
+        if let Ok(rd) = fs::read_dir(path) {
+            for entry in rd.flatten() {
+                let Ok(ft) = entry.file_type() else { continue };
+                if !ft.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !self.show_hidden && name.starts_with('.') {
+                    continue;
+                }
+                self.entries.push(name);
+            }
+        }
+        self.entries.sort();
+        if self.entries.is_empty() {
+            self.selected = 0;
+        } else {
+            self.selected = self.selected.min(self.entries.len() - 1);
+        }
+    }
+
+    /// Moves the selection by `delta` rows, clamped to valid bounds.
+    pub fn move_selection(&mut self, delta: isize) {
+        if self.entries.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        let len = self.entries.len() as isize;
+        self.selected = (self.selected as isize + delta).clamp(0, len - 1) as usize;
+    }
+
+    /// Drills into the highlighted directory, canonicalizing the path.
+    pub fn enter_selected(&mut self) {
+        if let Some(name) = self.entries.get(self.selected).cloned() {
+            let mut new_path = PathBuf::from(&self.path_input);
+            new_path.push(&name);
+            if let Ok(canonical) = new_path.canonicalize() {
+                self.path_input = canonical.display().to_string();
+            } else {
+                self.path_input = new_path.display().to_string();
+            }
+            self.selected = 0;
+            self.refresh_entries();
+        }
+    }
+
+    /// Navigates to the parent directory.
+    pub fn go_up(&mut self) {
+        let path = PathBuf::from(&self.path_input);
+        if let Some(parent) = path.parent() {
+            self.path_input = parent.display().to_string();
+            self.selected = 0;
+            self.refresh_entries();
+        }
+    }
+
+    /// Flips hidden-file visibility and refreshes the listing.
+    pub fn toggle_hidden(&mut self) {
+        self.show_hidden = !self.show_hidden;
+        self.refresh_entries();
+    }
+
+    /// Returns the full path of the currently highlighted child directory.
+    pub fn selected_child_path(&self) -> Option<String> {
+        let name = self.entries.get(self.selected)?;
+        let mut p = PathBuf::from(&self.path_input);
+        p.push(name);
+        Some(p.display().to_string())
+    }
+
+    /// Confirms the typed path and returns to list navigation mode.
+    pub fn confirm_path_edit(&mut self) {
+        self.editing_path = false;
+        self.selected = 0;
+        self.refresh_entries();
+    }
+
+    /// Enters path editing mode.
+    pub fn begin_path_edit(&mut self) {
+        self.editing_path = true;
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     HomeGrid,
@@ -51,7 +166,7 @@ pub struct TuiApp {
     pub ws_pending_select_head_branch: bool,
     pub ws_diff_scroll: u16,
     pub flash_on: bool,
-    pub add_workspace_path_input: Option<String>,
+    pub dir_browser: Option<DirBrowserState>,
     pub pending_delete_workspace: Option<WorkspaceId>,
     pub rename_workspace_input: Option<String>,
     pub rename_tab_input: Option<String>,
@@ -93,7 +208,7 @@ impl Default for TuiApp {
             ws_pending_select_head_branch: false,
             ws_diff_scroll: 0,
             flash_on: false,
-            add_workspace_path_input: None,
+            dir_browser: None,
             pending_delete_workspace: None,
             rename_workspace_input: None,
             rename_tab_input: None,
@@ -272,19 +387,19 @@ impl TuiApp {
     }
 
     pub fn begin_add_workspace(&mut self, initial_path: String) {
-        self.add_workspace_path_input = Some(initial_path);
+        self.dir_browser = Some(DirBrowserState::new(initial_path));
     }
 
     pub fn cancel_add_workspace(&mut self) {
-        self.add_workspace_path_input = None;
-    }
-
-    pub fn add_workspace_input_mut(&mut self) -> Option<&mut String> {
-        self.add_workspace_path_input.as_mut()
+        self.dir_browser = None;
     }
 
     pub fn is_adding_workspace(&self) -> bool {
-        self.add_workspace_path_input.is_some()
+        self.dir_browser.is_some()
+    }
+
+    pub fn dir_browser_mut(&mut self) -> Option<&mut DirBrowserState> {
+        self.dir_browser.as_mut()
     }
 
     pub fn begin_delete_workspace(&mut self) {
@@ -345,16 +460,22 @@ impl TuiApp {
     }
 
     pub fn take_add_workspace_request(&mut self) -> Option<(String, String)> {
-        let path = self.add_workspace_path_input.take()?;
+        let browser = self.dir_browser.take()?;
+        let trimmed = browser.path_input.trim().to_string();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let name = workspace_name_from_path(&trimmed);
+        Some((name, trimmed))
+    }
+
+    pub fn take_add_workspace_request_with_path(&mut self, path: String) -> Option<(String, String)> {
+        self.dir_browser.take()?;
         let trimmed = path.trim().to_string();
         if trimmed.is_empty() {
             return None;
         }
-        let name = Path::new(&trimmed)
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "workspace".to_string());
+        let name = workspace_name_from_path(&trimmed);
         Some((name, trimmed))
     }
 
@@ -730,6 +851,16 @@ impl TuiApp {
             .find(|w| w.id == id)
             .map(|w| w.path.clone())
     }
+}
+
+/// Derives a workspace display name from a filesystem path,
+/// falling back to `"workspace"` if the path has no file-name component.
+fn workspace_name_from_path(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "workspace".to_string())
 }
 
 #[derive(Clone)]

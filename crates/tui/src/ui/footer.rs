@@ -37,10 +37,6 @@ pub fn build_footer_hints(app: &TuiApp) -> Line<'static> {
         Route::Home => {
             if app.is_adding_workspace() {
                 vec![
-                    key("Tab"), desc(" autocomplete"),
-                    gap(),
-                    key("Enter"), desc(" create"),
-                    gap(),
                     key("Esc"), desc(" cancel"),
                 ]
             } else if app.is_settings_open() {

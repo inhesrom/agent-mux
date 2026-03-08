@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -96,18 +96,106 @@ fn dashboard_badge(count: usize, icon: &str, label: &str, color: Color) -> Vec<S
 
 /// Renders the add-workspace and delete-confirmation modals when active.
 fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
-    if let Some(path_input) = &app.add_workspace_path_input {
-        let modal = centered_rect(area, 70, 7);
+    if let Some(browser) = &app.dir_browser {
+        let modal = centered_rect(area, 70, 20);
         frame.render_widget(Clear, modal);
+
+        let outer_block = Block::default()
+            .title(" Browse Directory ")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Cyan));
+        let inner = outer_block.inner(modal);
+        frame.render_widget(outer_block, modal);
+
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ])
+            .split(inner);
+
+        // Path input section
+        let path_style = if browser.editing_path {
+            Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let path_display = if browser.editing_path {
+            format!("{}_", browser.path_input)
+        } else {
+            browser.path_input.clone()
+        };
+        let path_widget = Paragraph::new(path_display)
+            .block(
+                Block::default()
+                    .title(" Path ")
+                    .borders(Borders::ALL)
+                    .border_style(path_style),
+            );
+        frame.render_widget(path_widget, sections[0]);
+
+        // Directory listing section
+        if browser.entries.is_empty() {
+            let empty = Paragraph::new(Line::from(Span::styled(
+                "(no subdirectories)",
+                Style::default().fg(Color::DarkGray),
+            )))
+            .alignment(Alignment::Center);
+            frame.render_widget(empty, sections[1]);
+        } else {
+            let items: Vec<ListItem> = browser
+                .entries
+                .iter()
+                .map(|name| ListItem::new(format!("  {}/", name)))
+                .collect();
+            let list = List::new(items)
+                .highlight_symbol("> ")
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                );
+            let mut list_state = ListState::default();
+            list_state.select(Some(browser.selected));
+            frame.render_stateful_widget(list, sections[1], &mut list_state);
+        }
+
+        // Hint bar section
+        let key_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+        let desc_style = Style::default().fg(Color::DarkGray);
+        let hints = if browser.editing_path {
+            Line::from(vec![
+                Span::styled("Tab", key_style),
+                Span::styled(" complete  ", desc_style),
+                Span::styled("Enter", key_style),
+                Span::styled(" browse  ", desc_style),
+                Span::styled("Esc", key_style),
+                Span::styled(" cancel", desc_style),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("j/k", key_style),
+                Span::styled(" nav  ", desc_style),
+                Span::styled("Enter", key_style),
+                Span::styled(" open  ", desc_style),
+                Span::styled("Bksp", key_style),
+                Span::styled(" up  ", desc_style),
+                Span::styled(".", key_style),
+                Span::styled(" hidden  ", desc_style),
+                Span::styled("/", key_style),
+                Span::styled(" edit path  ", desc_style),
+                Span::styled("Tab", key_style),
+                Span::styled(" select dir  ", desc_style),
+                Span::styled("Space", key_style),
+                Span::styled(" select child", desc_style),
+            ])
+        };
         frame.render_widget(
-            Paragraph::new(format!("New Workspace Path\n\n{}", path_input))
-                .alignment(Alignment::Left)
-                .block(
-                    Block::default()
-                        .title("Add Workspace")
-                        .borders(Borders::ALL),
-                ),
-            modal,
+            Paragraph::new(vec![Line::from(""), hints]),
+            sections[2],
         );
     }
 
@@ -224,7 +312,7 @@ fn centered_rect(area: Rect, width_pct: u16, height: u16) -> Rect {
 
 /// Returns the rectangle used by the add-workspace modal.
 pub fn add_modal_rect(area: Rect) -> Rect {
-    centered_rect(area, 70, 7)
+    centered_rect(area, 70, 20)
 }
 
 /// Returns the rectangle used by the delete-confirmation modal.
