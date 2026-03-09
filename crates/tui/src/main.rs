@@ -365,6 +365,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             if !text.is_empty() {
                 if let Ok(mut clipboard) = arboard::Clipboard::new() {
                     let _ = clipboard.set_text(text);
+                    app.git_action_message =
+                        Some(("Copied to clipboard".to_string(), Instant::now()));
                 }
             }
         }
