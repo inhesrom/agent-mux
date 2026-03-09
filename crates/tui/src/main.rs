@@ -34,6 +34,7 @@ enum LaunchMode {
     RemoveSession { name: String },
     ListSessions,
     RunDaemon { name: String },
+    Update,
 }
 
 #[derive(Debug)]
@@ -75,6 +76,7 @@ OPTIONS:
     -r, --remove <name>    Remove a session (stops its daemon)
     -l, --list             List active sessions
     -d, --detach           Start session in background only (with -s or -a)
+    -u, --update           Update to the latest release from GitHub
     -V, --version          Print version
     -h, --help             Print this help
 
@@ -130,6 +132,10 @@ fn parse_cli(args: Vec<String>) -> Result<Cli> {
             }
             "-l" | "--list" => {
                 mode = LaunchMode::ListSessions;
+                i += 1;
+            }
+            "-u" | "--update" => {
+                mode = LaunchMode::Update;
                 i += 1;
             }
             "-h" | "--help" => {
@@ -196,6 +202,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     match cli.mode {
+        LaunchMode::Update => self_update(),
         LaunchMode::RunDaemon { name } => run_daemon(&name).await,
         LaunchMode::RemoveSession { name } => delete_session(&name),
         LaunchMode::ListSessions => list_sessions(),
@@ -244,6 +251,126 @@ async fn main() -> Result<()> {
             let (backend, _core) = build_local_backend();
             run_tui(backend).await
         }
+    }
+}
+
+fn self_update() -> Result<()> {
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    // Fetch latest release info from GitHub
+    let api_output = OsCommand::new("curl")
+        .args(["-fsSL", "https://api.github.com/repos/inhesrom/anvl/releases/latest"])
+        .output()
+        .context("failed to run curl — is it installed?")?;
+    if !api_output.status.success() {
+        return Err(anyhow!(
+            "failed to fetch latest release info from GitHub (curl exit {})",
+            api_output.status
+        ));
+    }
+    let api_body = String::from_utf8_lossy(&api_output.stdout);
+
+    // Parse tag_name from JSON (avoid adding a serde_json dep for this one field)
+    let tag = api_body
+        .lines()
+        .find(|l| l.contains("\"tag_name\""))
+        .and_then(|l| {
+            let start = l.find('"')? + 1; // skip to first quote
+            let rest = &l[start..];
+            let start2 = rest.find('"')? + 1;
+            let rest2 = &rest[start2..];
+            let start3 = rest2.find('"')? + 1;
+            let rest3 = &rest2[start3..];
+            let end = rest3.find('"')?;
+            Some(rest3[..end].to_string())
+        })
+        .ok_or_else(|| anyhow!("could not parse tag_name from GitHub API response"))?;
+
+    let latest_version = tag.strip_prefix('v').unwrap_or(&tag);
+
+    if latest_version == current_version {
+        println!("anvl is already up to date (v{current_version})");
+        return Ok(());
+    }
+
+    println!("updating anvl v{current_version} -> v{latest_version}...");
+
+    // Detect platform
+    let os_output = OsCommand::new("uname").arg("-s").output()?;
+    let os_name = String::from_utf8_lossy(&os_output.stdout)
+        .trim()
+        .to_lowercase();
+
+    let arch_output = OsCommand::new("uname").arg("-m").output()?;
+    let arch_name = String::from_utf8_lossy(&arch_output.stdout)
+        .trim()
+        .to_string();
+
+    let target = match (os_name.as_str(), arch_name.as_str()) {
+        ("darwin", "arm64" | "aarch64") => "aarch64-apple-darwin",
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        _ => return Err(anyhow!("unsupported platform: {os_name} {arch_name}")),
+    };
+
+    let url = format!(
+        "https://github.com/inhesrom/anvl/releases/download/{tag}/anvl-{target}.tar.gz"
+    );
+
+    // Download to a temp directory
+    let tmp_dir = std::env::temp_dir().join(format!("anvl-update-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp_dir)?;
+    let _cleanup = TempDirGuard(tmp_dir.clone());
+
+    let tarball = tmp_dir.join("anvl.tar.gz");
+    let dl_status = OsCommand::new("curl")
+        .args(["-fsSL", &url, "-o"])
+        .arg(&tarball)
+        .status()
+        .context("failed to run curl for download")?;
+    if !dl_status.success() {
+        return Err(anyhow!("failed to download release tarball from {url}"));
+    }
+
+    // Extract
+    let extract_status = OsCommand::new("tar")
+        .arg("xzf")
+        .arg(&tarball)
+        .arg("-C")
+        .arg(&tmp_dir)
+        .status()
+        .context("failed to run tar")?;
+    if !extract_status.success() {
+        return Err(anyhow!("failed to extract release tarball"));
+    }
+
+    // Replace the current binary
+    let current_exe = std::env::current_exe().context("cannot determine current executable path")?;
+    let new_binary = tmp_dir.join("anvl");
+    if !new_binary.exists() {
+        return Err(anyhow!("extracted archive does not contain 'anvl' binary"));
+    }
+
+    std::fs::copy(&new_binary, &current_exe).with_context(|| {
+        format!(
+            "failed to replace binary at {}. You may need to run with sudo.",
+            current_exe.display()
+        )
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&current_exe, std::fs::Permissions::from_mode(0o755))?;
+    }
+
+    println!("anvl updated to v{latest_version}");
+    Ok(())
+}
+
+struct TempDirGuard(PathBuf);
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
