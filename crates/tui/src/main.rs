@@ -766,6 +766,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
 
                             if matches!(app.focus, app::Focus::WsTerminal)
                                 && key.code != KeyCode::Tab
+                                && key.code != KeyCode::BackTab
                             {
                                 if let Some(bytes) = key_to_terminal_bytes(key) {
                                     let _ = backend
