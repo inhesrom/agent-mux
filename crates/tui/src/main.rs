@@ -786,12 +786,11 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
     let mut app = TuiApp::default();
     let mut last_flash_toggle = Instant::now();
 
-    loop {
-        loop {
+    'main: loop {
+        for _ in 0..128 {
             match backend.evt_rx.try_recv() {
                 Ok(evt) => apply_event(&mut app, evt),
-                Err(mpsc::error::TryRecvError::Empty) => break,
-                Err(mpsc::error::TryRecvError::Disconnected) => break,
+                Err(_) => break,
             }
         }
 
@@ -849,7 +848,9 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
         }
 
-        if event::poll(Duration::from_millis(16))? {
+        let mut poll_timeout = Duration::from_millis(16);
+        while event::poll(poll_timeout)? {
+            poll_timeout = Duration::ZERO;
             match event::read()? {
                 Event::Key(key) => {
                     if matches!(key.kind, KeyEventKind::Release) {
@@ -858,6 +859,8 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
 
                     if keymap::is_quit(key)
                         && !app.is_adding_workspace()
+                        && !app.is_adding_ssh_workspace()
+                        && app.ssh_history_picker.is_none()
                         && !app.is_confirming_delete()
                         && !app.is_renaming_workspace()
                         && !app.is_renaming_tab()
@@ -866,7 +869,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                         && !app.is_settings_open()
                         && !matches!(app.focus, app::Focus::WsTerminal)
                     {
-                        break;
+                        break 'main;
                     }
 
                     match app.route {
@@ -925,6 +928,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     KeyCode::Esc => app.cancel_ssh_history_picker(),
                                     _ => {}
                                 }
+                                continue;
                             } else if app.is_adding_ssh_workspace() {
                                 match key.code {
                                     KeyCode::Esc => app.cancel_ssh_workspace(),
@@ -976,6 +980,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     }
                                     _ => {}
                                 }
+                                continue;
                             } else if app.is_adding_workspace() {
                                 let editing = app.dir_browser.as_ref().map_or(false, |b| b.editing_path);
                                 if editing {

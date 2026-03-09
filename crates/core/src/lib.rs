@@ -37,9 +37,9 @@ pub struct CoreHandle {
 }
 
 pub fn spawn_core() -> CoreHandle {
-    let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(256);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel::<Command>(1024);
     let cmd_tx_internal = cmd_tx.clone();
-    let (evt_tx, _) = broadcast::channel::<Event>(256);
+    let (evt_tx, _) = broadcast::channel::<Event>(4096);
     let evt_tx_task = evt_tx.clone();
 
     tokio::spawn(async move {
