@@ -180,7 +180,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 Span::styled("j/k", key_style),
                 Span::styled(" nav  ", desc_style),
                 Span::styled("Enter", key_style),
-                Span::styled(" open  ", desc_style),
+                Span::styled(" open ws  ", desc_style),
                 Span::styled("Bksp", key_style),
                 Span::styled(" up  ", desc_style),
                 Span::styled(".", key_style),
@@ -188,7 +188,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 Span::styled("/", key_style),
                 Span::styled(" edit path  ", desc_style),
                 Span::styled("Tab", key_style),
-                Span::styled(" select dir  ", desc_style),
+                Span::styled(" open child  ", desc_style),
                 Span::styled("Space", key_style),
                 Span::styled(" select child", desc_style),
             ])

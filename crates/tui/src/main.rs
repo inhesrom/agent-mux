@@ -441,8 +441,12 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             }
                                         }
                                         KeyCode::Enter => {
-                                            if let Some(browser) = app.dir_browser_mut() {
-                                                browser.enter_selected();
+                                            if let Some((name, path)) = app.take_add_workspace_request()
+                                            {
+                                                let _ = backend
+                                                    .cmd_tx
+                                                    .send(Command::AddWorkspace { name, path })
+                                                    .await;
                                             }
                                         }
                                         KeyCode::Backspace => {
@@ -461,18 +465,18 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                             }
                                         }
                                         KeyCode::Tab => {
-                                            if let Some((name, path)) = app.take_add_workspace_request()
-                                            {
-                                                let _ = backend
-                                                    .cmd_tx
-                                                    .send(Command::AddWorkspace { name, path })
-                                                    .await;
+                                            if let Some(browser) = app.dir_browser_mut() {
+                                                browser.enter_selected();
                                             }
                                         }
                                         KeyCode::Char(' ') => {
-                                            let child_path = app.dir_browser.as_ref().and_then(|b| b.selected_child_path());
+                                            let child_path = app
+                                                .dir_browser
+                                                .as_ref()
+                                                .and_then(|b| b.selected_child_path());
                                             if let Some(path) = child_path {
-                                                if let Some((name, path)) = app.take_add_workspace_request_with_path(path)
+                                                if let Some((name, path)) =
+                                                    app.take_add_workspace_request_with_path(path)
                                                 {
                                                     let _ = backend
                                                         .cmd_tx
