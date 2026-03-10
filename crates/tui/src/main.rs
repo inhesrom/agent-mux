@@ -666,6 +666,7 @@ fn list_sessions() -> Result<()> {
 fn spawn_daemon_process(name: &str) -> Result<u32> {
     let exe = std::env::current_exe()?;
     let child = OsCommand::new(exe)
+        .env("ANVL_SESSION_NAME", name)
         .arg("--run-daemon")
         .arg("--session-name")
         .arg(name)
