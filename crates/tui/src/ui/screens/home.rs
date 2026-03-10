@@ -15,7 +15,7 @@ use tile_grid::ORANGE;
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     let chunks = home_chunks(area);
     render_dashboard(frame, chunks[0], app);
-    tile_grid::render(frame, chunks[1], &app.workspaces, app.home_selected, app.flash_on, app.settings.attention_notifications);
+    tile_grid::render(frame, chunks[1], &app.workspaces, app.home_selected, app.spinner_tick % 2 == 0, app.settings.attention_notifications);
     footer::render(frame, chunks[2], app);
     render_modals(frame, area, app);
 }

@@ -187,8 +187,10 @@ pub fn build_terminal_title_line(
     Line::from(spans)
 }
 
-fn spinner_frame(flash_on: bool) -> &'static str {
-    if flash_on { "⠋" } else { "⠙" }
+const BRAILLE_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+fn spinner_frame(tick: u8) -> &'static str {
+    BRAILLE_SPINNER[(tick as usize) % BRAILLE_SPINNER.len()]
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
@@ -383,10 +385,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
                     Style::default()
                 };
                 spans.push(Span::styled(b.name.clone(), name_style));
-                if b.is_head && ws_id.map(|id| app.is_git_op_in_progress(id)).unwrap_or(false) {
+                let git_op_active = b.is_head && ws_id.map(|id| app.is_git_op_in_progress(id)).unwrap_or(false);
+                if git_op_active {
+                    // Re-style all existing spans yellow during git ops
+                    let yellow_bold = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+                    for s in &mut spans {
+                        *s = Span::styled(s.content.clone(), yellow_bold);
+                    }
                     spans.push(Span::styled(
-                        format!(" {}", spinner_frame(app.flash_on)),
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        format!(" {}", spinner_frame(app.spinner_tick)),
+                        yellow_bold,
                     ));
                 }
                 // Ahead/behind indicators
@@ -591,7 +599,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         let (border_style, border_type) = if is_active
             && is_agent
             && matches!(attention, AttentionLevel::NeedsInput | AttentionLevel::Error)
-            && app.flash_on
+            && app.spinner_tick % 2 == 0
         {
             let color = match attention {
                 AttentionLevel::Error => Color::Red,
@@ -630,8 +638,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         .map(|id| app.terminal_lines(id, &app.active_tab_id()))
         .unwrap_or_else(|| vec![Line::from("No terminal output yet.")]);
     let (term_style, term_border_type) =
-        pane_border_style(terminal_focused, attention, app.flash_on);
-    let term_title = build_terminal_title_line(attention, app.flash_on, app.active_tab_passthrough());
+        pane_border_style(terminal_focused, attention, app.spinner_tick % 2 == 0);
+    let term_title = build_terminal_title_line(attention, app.spinner_tick % 2 == 0, app.active_tab_passthrough());
     frame.render_widget(Clear, l.terminal_pane);
     frame.render_widget(
         Paragraph::new(terminal_lines).block(

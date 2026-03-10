@@ -794,6 +794,15 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
             }
         }
 
+        // Check if deferred git result can now be shown (spinner min duration met).
+        if let Some((id, msg)) = app.deferred_git_result.take() {
+            if app.finish_git_op(id) {
+                app.git_action_message = Some((msg, std::time::Instant::now()));
+            } else {
+                app.deferred_git_result = Some((id, msg));
+            }
+        }
+
         if let Route::Workspace { id } = app.route {
             if let Ok(size) = terminal.size() {
                 let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
@@ -1626,7 +1635,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
         }
 
         if last_flash_toggle.elapsed() >= Duration::from_millis(250) {
-            app.flash_on = !app.flash_on;
+            app.spinner_tick = app.spinner_tick.wrapping_add(1);
             last_flash_toggle = Instant::now();
         }
     }
@@ -1683,8 +1692,12 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
             success: _,
             message,
         } => {
-            app.finish_git_op(id);
-            app.git_action_message = Some((message, std::time::Instant::now()));
+            if app.finish_git_op(id) {
+                app.git_action_message = Some((message, std::time::Instant::now()));
+            } else {
+                // Spinner minimum duration not met; defer the toast.
+                app.deferred_git_result = Some((id, message));
+            }
         }
         CoreEvent::WorkspaceAttentionChanged { id, level } => {
             if let Some(ws) = app.workspaces.iter_mut().find(|w| w.id == id) {

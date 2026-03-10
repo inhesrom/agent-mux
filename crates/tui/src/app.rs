@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -263,7 +263,7 @@ pub struct TuiApp {
     pub ws_branch_sub_pane: BranchSubPane,
     pub ws_pending_select_head_branch: bool,
     pub ws_diff_scroll: u16,
-    pub flash_on: bool,
+    pub spinner_tick: u8,
     pub dir_browser: Option<DirBrowserState>,
     pub pending_delete_workspace: Option<WorkspaceId>,
     pub rename_workspace_input: Option<String>,
@@ -273,8 +273,10 @@ pub struct TuiApp {
     pub create_branch_input: Option<String>,
     pub settings: Settings,
     /// Workspace IDs with an in-flight git network operation (pull/push/fetch).
-    /// Set on command dispatch, cleared when `GitActionResult` arrives.
-    pub git_op_in_progress: HashSet<WorkspaceId>,
+    /// Stores the start time so we can enforce a minimum spinner display duration.
+    pub git_op_in_progress: HashMap<WorkspaceId, Instant>,
+    /// Deferred git result waiting for spinner minimum duration to elapse.
+    pub deferred_git_result: Option<(WorkspaceId, String)>,
     pub settings_open: bool,
     pub settings_selected: usize,
     pub mouse_selection: Option<MouseSelection>,
@@ -311,7 +313,7 @@ impl Default for TuiApp {
             ws_branch_sub_pane: BranchSubPane::Local,
             ws_pending_select_head_branch: false,
             ws_diff_scroll: 0,
-            flash_on: false,
+            spinner_tick: 0,
             dir_browser: None,
             pending_delete_workspace: None,
             rename_workspace_input: None,
@@ -319,7 +321,8 @@ impl Default for TuiApp {
             git_action_message: None,
             commit_input: None,
             create_branch_input: None,
-            git_op_in_progress: HashSet::new(),
+            git_op_in_progress: HashMap::new(),
+            deferred_git_result: None,
             settings: load_settings(),
             settings_open: false,
             settings_selected: 0,
@@ -894,15 +897,26 @@ impl TuiApp {
     }
 
     pub fn begin_git_op(&mut self, id: WorkspaceId) {
-        self.git_op_in_progress.insert(id);
+        self.git_op_in_progress.insert(id, Instant::now());
     }
 
-    pub fn finish_git_op(&mut self, id: WorkspaceId) {
-        self.git_op_in_progress.remove(&id);
+    /// Mark git op as done. Returns `true` if enough time has passed and the op
+    /// was actually cleared, `false` if we should defer clearing (minimum
+    /// display duration not met).
+    pub fn finish_git_op(&mut self, id: WorkspaceId) -> bool {
+        const MIN_SPINNER_DURATION: std::time::Duration = std::time::Duration::from_millis(600);
+        if let Some(started) = self.git_op_in_progress.get(&id) {
+            if started.elapsed() >= MIN_SPINNER_DURATION {
+                self.git_op_in_progress.remove(&id);
+                return true;
+            }
+            return false;
+        }
+        true
     }
 
     pub fn is_git_op_in_progress(&self, id: WorkspaceId) -> bool {
-        self.git_op_in_progress.contains(&id)
+        self.git_op_in_progress.contains_key(&id)
     }
 
     pub fn begin_create_branch(&mut self) {
