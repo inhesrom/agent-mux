@@ -34,7 +34,7 @@ struct WorkspaceLayout {
     footer: Rect,
 }
 
-fn layout(area: Rect, focus: crate::app::Focus) -> WorkspaceLayout {
+fn layout(area: Rect, focus: crate::app::Focus, terminal_fullscreen: bool) -> WorkspaceLayout {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -43,6 +43,25 @@ fn layout(area: Rect, focus: crate::app::Focus) -> WorkspaceLayout {
             Constraint::Length(2),
         ])
         .split(area);
+
+    if terminal_fullscreen {
+        let terminal_area = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(5), Constraint::Min(3)])
+            .split(chunks[1]);
+        let zero = Rect::new(0, 0, 0, 0);
+        return WorkspaceLayout {
+            header: chunks[0],
+            terminal_tabs: terminal_area[0],
+            terminal_pane: terminal_area[1],
+            git_files: zero,
+            git_log: zero,
+            git_branches: zero,
+            git_diff: zero,
+            footer: chunks[2],
+        };
+    }
+
     let body = Layout::default()
         .direction(Direction::Vertical)
         .constraints(match focus {
@@ -194,7 +213,7 @@ fn spinner_frame(tick: u8) -> &'static str {
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
-    let l = layout(area, app.focus);
+    let l = layout(area, app.focus, app.terminal_fullscreen);
 
     let ws_id = match app.route {
         Route::Workspace { id } => Some(id),
@@ -250,6 +269,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         l.header,
     );
 
+    if !app.terminal_fullscreen {
     // --- Changed Files ---
     let files = ws_id
         .and_then(|id| app.workspace_git.get(&id))
@@ -574,6 +594,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             .wrap(Wrap { trim: false }),
         l.git_diff,
     );
+    } // end if !terminal_fullscreen
 
     // --- Terminal Tabs ---
     let ws_summary = ws_id.and_then(|id| app.workspaces.iter().find(|w| w.id == id));
@@ -842,7 +863,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
 }
 
 pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit> {
-    let l = layout(area, app.focus);
+    let l = layout(area, app.focus, app.terminal_fullscreen);
 
     let point_inside = |r: Rect| x >= r.x && y >= r.y && x < r.right() && y < r.bottom();
     if point_inside(l.header) {
@@ -914,8 +935,8 @@ pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit
     None
 }
 
-pub fn terminal_content_rect(area: Rect, focus: crate::app::Focus) -> Rect {
-    let pane = layout(area, focus).terminal_pane;
+pub fn terminal_content_rect(area: Rect, focus: crate::app::Focus, terminal_fullscreen: bool) -> Rect {
+    let pane = layout(area, focus, terminal_fullscreen).terminal_pane;
     Rect::new(
         pane.x.saturating_add(1),
         pane.y.saturating_add(1),

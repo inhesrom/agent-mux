@@ -288,6 +288,7 @@ pub struct TuiApp {
     pub confirm_discard_file: Option<String>,
     pub stash_input: Option<String>,
     pub confirm_stash_pull_pop: Option<WorkspaceId>,
+    pub terminal_fullscreen: bool,
 }
 
 impl Default for TuiApp {
@@ -337,6 +338,7 @@ impl Default for TuiApp {
             confirm_discard_file: None,
             stash_input: None,
             confirm_stash_pull_pop: None,
+            terminal_fullscreen: false,
         }
     }
 }
@@ -375,6 +377,11 @@ impl TuiApp {
         self.persist_tabs_for_active_workspace();
         self.route = Route::Home;
         self.focus = Focus::HomeGrid;
+        self.terminal_fullscreen = false;
+    }
+
+    pub fn toggle_terminal_fullscreen(&mut self) {
+        self.terminal_fullscreen = !self.terminal_fullscreen;
     }
 
     pub fn move_home_selection(&mut self, dx: isize, dy: isize) {

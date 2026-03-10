@@ -907,7 +907,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
         if let Route::Workspace { id } = app.route {
             if let Ok(size) = terminal.size() {
                 let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
-                let inner = ui::screens::workspace::terminal_content_rect(area, app.focus);
+                let inner = ui::screens::workspace::terminal_content_rect(area, app.focus, app.terminal_fullscreen);
                 let cols = inner.width.max(1);
                 let rows = inner.height.max(1);
                 let tid = app.active_tab_id();
@@ -1505,6 +1505,12 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                         })
                                         .await;
                                 }
+                                continue;
+                            }
+
+                            // Shift+F toggles terminal fullscreen from any workspace pane.
+                            if key.code == KeyCode::Char('F') {
+                                app.toggle_terminal_fullscreen();
                                 continue;
                             }
 
