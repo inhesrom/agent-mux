@@ -452,50 +452,157 @@ async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(w: &mut W, data: &[u8]) -
     Ok(())
 }
 
-/// Rolling buffer that stores recent terminal events for replay on client reconnect.
-/// Caps total size at ~2 MB to bound memory usage.
-struct EventHistory {
-    /// Serialized event frames (each is a JSON payload).
-    frames: Vec<Vec<u8>>,
-    total_bytes: usize,
+use std::collections::HashMap;
+use uuid::Uuid;
+
+/// Per-workspace keyed state store — keeps only the latest of each state event type.
+struct WorkspaceState {
+    git: Option<Vec<u8>>,
+    attention: Option<Vec<u8>>,
 }
 
-const EVENT_HISTORY_MAX_BYTES: usize = 2 * 1024 * 1024; // 2 MB
+/// Keyed state store for non-terminal events. No eviction needed — each workspace
+/// stores only the latest of each event type.
+struct EventHistory {
+    workspace_list: Option<Vec<u8>>,
+    per_workspace: HashMap<Uuid, WorkspaceState>,
+}
 
 impl EventHistory {
     fn new() -> Self {
         Self {
-            frames: Vec::new(),
-            total_bytes: 0,
+            workspace_list: None,
+            per_workspace: HashMap::new(),
         }
     }
 
-    fn push(&mut self, payload: Vec<u8>) {
-        self.total_bytes += payload.len();
-        self.frames.push(payload);
-        // Evict oldest frames when over budget
-        while self.total_bytes > EVENT_HISTORY_MAX_BYTES && !self.frames.is_empty() {
-            let removed = self.frames.remove(0);
-            self.total_bytes -= removed.len();
+    fn update(&mut self, evt: &CoreEvent, payload: Vec<u8>) {
+        match evt {
+            CoreEvent::WorkspaceList { .. } => {
+                self.workspace_list = Some(payload);
+            }
+            CoreEvent::WorkspaceGitUpdated { id, .. } => {
+                self.per_workspace
+                    .entry(*id)
+                    .or_insert_with(|| WorkspaceState {
+                        git: None,
+                        attention: None,
+                    })
+                    .git = Some(payload);
+            }
+            CoreEvent::WorkspaceAttentionChanged { id, .. } => {
+                self.per_workspace
+                    .entry(*id)
+                    .or_insert_with(|| WorkspaceState {
+                        git: None,
+                        attention: None,
+                    })
+                    .attention = Some(payload);
+            }
+            _ => {}
         }
     }
 
     fn snapshot(&self) -> Vec<Vec<u8>> {
-        self.frames.clone()
+        let mut out = Vec::new();
+        if let Some(ref frame) = self.workspace_list {
+            out.push(frame.clone());
+        }
+        for ws in self.per_workspace.values() {
+            if let Some(ref frame) = ws.git {
+                out.push(frame.clone());
+            }
+            if let Some(ref frame) = ws.attention {
+                out.push(frame.clone());
+            }
+        }
+        out
     }
 }
 
-/// Returns true if the event is worth replaying to a reconnecting client.
-fn is_replayable(evt: &CoreEvent) -> bool {
-    matches!(
-        evt,
-        CoreEvent::TerminalOutput { .. }
-            | CoreEvent::TerminalStarted { .. }
-            | CoreEvent::TerminalExited { .. }
-            | CoreEvent::WorkspaceList { .. }
-            | CoreEvent::WorkspaceGitUpdated { .. }
-            | CoreEvent::WorkspaceAttentionChanged { .. }
-    )
+/// Per-terminal ring buffer — stores raw terminal bytes (base64-decoded) per tab.
+struct TerminalBuffer {
+    kind: protocol::TerminalKind,
+    data: Vec<u8>,
+}
+
+struct TerminalHistory {
+    buffers: HashMap<(Uuid, String), TerminalBuffer>,
+}
+
+const TERMINAL_HISTORY_MAX_BYTES: usize = 512 * 1024; // 512 KB per terminal tab
+
+impl TerminalHistory {
+    fn new() -> Self {
+        Self {
+            buffers: HashMap::new(),
+        }
+    }
+
+    fn append(
+        &mut self,
+        id: Uuid,
+        kind: protocol::TerminalKind,
+        tab_id: String,
+        raw_bytes: &[u8],
+    ) {
+        let entry = self
+            .buffers
+            .entry((id, tab_id))
+            .or_insert_with(|| TerminalBuffer {
+                kind,
+                data: Vec::new(),
+            });
+        entry.kind = kind;
+        entry.data.extend_from_slice(raw_bytes);
+        if entry.data.len() > TERMINAL_HISTORY_MAX_BYTES {
+            let excess = entry.data.len() - TERMINAL_HISTORY_MAX_BYTES;
+            entry.data.drain(..excess);
+        }
+    }
+
+    fn reset(&mut self, id: Uuid, tab_id: String) {
+        self.buffers.remove(&(id, tab_id));
+    }
+
+    /// Emit a TerminalStarted + single TerminalOutput per buffer for replay.
+    fn snapshot(&self) -> Vec<CoreEvent> {
+        let mut out = Vec::new();
+        for ((id, tab_id), entry) in &self.buffers {
+            if entry.data.is_empty() {
+                continue;
+            }
+            out.push(CoreEvent::TerminalStarted {
+                id: *id,
+                kind: entry.kind,
+                tab_id: Some(tab_id.clone()),
+            });
+            let data_b64 =
+                base64::engine::general_purpose::STANDARD.encode(&entry.data);
+            out.push(CoreEvent::TerminalOutput {
+                id: *id,
+                kind: entry.kind,
+                tab_id: Some(tab_id.clone()),
+                data_b64,
+            });
+        }
+        out
+    }
+}
+
+/// Combined history shared under a single mutex for atomic snapshots.
+struct CombinedHistory {
+    state: EventHistory,
+    terminals: TerminalHistory,
+}
+
+impl CombinedHistory {
+    fn new() -> Self {
+        Self {
+            state: EventHistory::new(),
+            terminals: TerminalHistory::new(),
+        }
+    }
 }
 
 async fn run_daemon(name: &str) -> Result<()> {
@@ -520,7 +627,7 @@ async fn run_daemon(name: &str) -> Result<()> {
     let _guard = CleanupGuard(sock_path.clone());
 
     // Shared history buffer for replaying events to reconnecting clients
-    let history = std::sync::Arc::new(tokio::sync::Mutex::new(EventHistory::new()));
+    let history = std::sync::Arc::new(tokio::sync::Mutex::new(CombinedHistory::new()));
 
     // Background task: record replayable events into history
     {
@@ -529,15 +636,47 @@ async fn run_daemon(name: &str) -> Result<()> {
         tokio::spawn(async move {
             loop {
                 match evt_rx.recv().await {
-                    Ok(evt) => {
-                        if is_replayable(&evt) {
-                            if let Ok(payload) = serde_json::to_vec(&evt) {
-                                history.lock().await.push(payload);
+                    Ok(ref evt) => {
+                        match evt {
+                            CoreEvent::TerminalOutput {
+                                id,
+                                kind,
+                                tab_id,
+                                data_b64,
+                            } => {
+                                if let Ok(raw) = base64::engine::general_purpose::STANDARD
+                                    .decode(data_b64)
+                                {
+                                    let tab = tab_id
+                                        .clone()
+                                        .unwrap_or_else(|| "default".to_string());
+                                    history.lock().await.terminals.append(
+                                        *id, *kind, tab, &raw,
+                                    );
+                                }
                             }
+                            CoreEvent::TerminalStarted { id, tab_id, .. } => {
+                                let tab = tab_id
+                                    .clone()
+                                    .unwrap_or_else(|| "default".to_string());
+                                history.lock().await.terminals.reset(*id, tab);
+                            }
+                            CoreEvent::WorkspaceList { .. }
+                            | CoreEvent::WorkspaceGitUpdated { .. }
+                            | CoreEvent::WorkspaceAttentionChanged { .. } => {
+                                if let Ok(payload) = serde_json::to_vec(evt) {
+                                    history.lock().await.state.update(evt, payload);
+                                }
+                            }
+                            // TerminalExited: leave buffer intact (shows last output)
+                            _ => {}
                         }
                     }
                     Err(RecvError::Closed) => break,
-                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Lagged(n)) => {
+                        eprintln!("[anvl] event recorder lagged by {n} events");
+                        continue;
+                    }
                 }
             }
         });
@@ -547,30 +686,13 @@ async fn run_daemon(name: &str) -> Result<()> {
         let (stream, _) = listener.accept().await?;
         let (mut reader, mut writer) = stream.into_split();
         let cmd_tx = core.cmd_tx.clone();
-        let mut evt_rx = core.evt_tx.subscribe();
         let history = history.clone();
+        let core_evt_tx = core.evt_tx.clone();
 
         // Bridge: read Commands from socket, send Events back
         tokio::spawn(async move {
-            let (local_evt_tx, mut local_evt_rx) = mpsc::channel::<CoreEvent>(1024);
-
-            // Forward broadcast events to local channel
-            tokio::spawn(async move {
-                loop {
-                    match evt_rx.recv().await {
-                        Ok(evt) => {
-                            if local_evt_tx.send(evt).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(RecvError::Closed) => break,
-                        Err(RecvError::Lagged(_)) => continue,
-                    }
-                }
-            });
-
             // Write events to socket
-            let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(1024);
+            let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(2048);
             tokio::spawn(async move {
                 while let Some(data) = write_rx.recv().await {
                     if write_frame(&mut writer, &data).await.is_err() {
@@ -579,23 +701,48 @@ async fn run_daemon(name: &str) -> Result<()> {
                 }
             });
 
-            // Replay historical events to the newly connected client
-            {
-                let snapshot = history.lock().await.snapshot();
-                for frame in snapshot {
+            // Lock history, take snapshot, subscribe to broadcast — all under lock
+            // to guarantee no gap or overlap between snapshot and live events.
+            let mut evt_rx = {
+                let combined = history.lock().await;
+
+                // Send state events first
+                for frame in combined.state.snapshot() {
                     if write_tx.send(frame).await.is_err() {
                         return;
                     }
                 }
-            }
+                // Then terminal history (TerminalStarted + TerminalOutput per tab)
+                for evt in combined.terminals.snapshot() {
+                    if let Ok(payload) = serde_json::to_vec(&evt) {
+                        if write_tx.send(payload).await.is_err() {
+                            return;
+                        }
+                    }
+                }
 
-            // Forward events to write channel
+                // Subscribe while still holding lock — no events can be missed
+                let rx = core_evt_tx.subscribe();
+                // Lock is dropped when `combined` goes out of scope
+                rx
+            };
+
+            // Forward live broadcast events directly to socket writer
             let write_tx2 = write_tx.clone();
             tokio::spawn(async move {
-                while let Some(evt) = local_evt_rx.recv().await {
-                    if let Ok(payload) = serde_json::to_vec(&evt) {
-                        if write_tx2.send(payload).await.is_err() {
-                            break;
+                loop {
+                    match evt_rx.recv().await {
+                        Ok(evt) => {
+                            if let Ok(payload) = serde_json::to_vec(&evt) {
+                                if write_tx2.send(payload).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(RecvError::Closed) => break,
+                        Err(RecvError::Lagged(n)) => {
+                            eprintln!("[anvl] client event forwarder lagged by {n} events");
+                            continue;
                         }
                     }
                 }
