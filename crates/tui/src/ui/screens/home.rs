@@ -450,3 +450,74 @@ fn home_chunks(area: Rect) -> Vec<Rect> {
         .split(area)
         .to_vec()
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app::TuiApp;
+    use protocol::{AttentionLevel, WorkspaceSummary};
+    use uuid::Uuid;
+
+    fn make_ws(name: &str) -> WorkspaceSummary {
+        WorkspaceSummary {
+            id: Uuid::new_v4(),
+            name: name.to_string(),
+            path: format!("/tmp/{name}"),
+            branch: Some("main".into()),
+            ahead: Some(0),
+            behind: Some(0),
+            dirty_files: 0,
+            attention: AttentionLevel::None,
+            agent_running: false,
+            shell_running: false,
+            last_activity_unix_ms: 0,
+            ssh_host: None,
+        }
+    }
+
+    fn smoke_render_home(app: &TuiApp, width: u16, height: u16) {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                super::render(frame, area, app);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn render_home_empty_workspaces() {
+        let app = TuiApp::default();
+        smoke_render_home(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_home_with_workspaces() {
+        let mut app = TuiApp::default();
+        app.set_workspaces(vec![make_ws("alpha"), make_ws("beta"), make_ws("gamma")]);
+        smoke_render_home(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_home_with_delete_modal() {
+        let mut app = TuiApp::default();
+        let ws = make_ws("doomed");
+        let id = ws.id;
+        app.set_workspaces(vec![ws]);
+        app.pending_delete_workspace = Some(id);
+        smoke_render_home(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_home_with_settings_modal() {
+        let mut app = TuiApp::default();
+        app.settings_open = true;
+        smoke_render_home(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_home_very_small_terminal() {
+        let app = TuiApp::default();
+        smoke_render_home(&app, 20, 10);
+    }
+}

@@ -298,3 +298,305 @@ fn truncate_end(input: &str, max: usize) -> String {
     s.push('…');
     s
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Rect;
+
+    fn area() -> Rect {
+        Rect::new(0, 0, 90, 36)
+    }
+
+    // --- index_at ---
+
+    #[test]
+    fn index_at_first_tile() {
+        assert_eq!(index_at(area(), 1, 1, 6), Some(0));
+    }
+
+    #[test]
+    fn index_at_second_column() {
+        let a = area();
+        let tile_w = a.width / COLS;
+        assert_eq!(index_at(a, tile_w + 1, 1, 6), Some(1));
+    }
+
+    #[test]
+    fn index_at_second_row() {
+        assert_eq!(index_at(area(), 1, TILE_H + 1, 6), Some(3));
+    }
+
+    #[test]
+    fn index_at_outside_area() {
+        assert_eq!(index_at(area(), 200, 200, 6), None);
+    }
+
+    #[test]
+    fn index_at_zero_items() {
+        assert_eq!(index_at(area(), 1, 1, 0), None);
+    }
+
+    #[test]
+    fn index_at_beyond_item_count() {
+        // Click where a 7th tile would be, but only 3 items exist
+        assert_eq!(index_at(area(), 1, TILE_H + 1, 3), None);
+    }
+
+    #[test]
+    fn index_at_offset_area() {
+        let a = Rect::new(10, 5, 90, 36);
+        // Click before the area
+        assert_eq!(index_at(a, 5, 5, 3), None);
+        // Click inside the area
+        assert_eq!(index_at(a, 11, 6, 3), Some(0));
+    }
+
+    // --- tile_rect ---
+
+    #[test]
+    fn tile_rect_first() {
+        let a = area();
+        let tile_w = a.width / COLS;
+        let r = tile_rect(a, 0, COLS as usize, tile_w);
+        assert_eq!(r.x, 0);
+        assert_eq!(r.y, 0);
+        assert_eq!(r.width, tile_w);
+        assert_eq!(r.height, TILE_H);
+    }
+
+    #[test]
+    fn tile_rect_second_row_first_col() {
+        let a = area();
+        let tile_w = a.width / COLS;
+        let r = tile_rect(a, 3, COLS as usize, tile_w);
+        assert_eq!(r.x, 0);
+        assert_eq!(r.y, TILE_H);
+    }
+
+    #[test]
+    fn tile_rect_with_offset_area() {
+        let a = Rect::new(10, 5, 90, 36);
+        let tile_w = a.width / COLS;
+        let r = tile_rect(a, 1, COLS as usize, tile_w);
+        assert_eq!(r.x, 10 + tile_w);
+        assert_eq!(r.y, 5);
+    }
+
+    // --- truncate_end ---
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate_end("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_length() {
+        assert_eq!(truncate_end("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_long_string() {
+        assert_eq!(truncate_end("hello world", 6), "hello…");
+    }
+
+    #[test]
+    fn truncate_max_zero() {
+        assert_eq!(truncate_end("hello", 0), "…");
+    }
+
+    #[test]
+    fn truncate_max_one() {
+        assert_eq!(truncate_end("hello", 1), "…");
+    }
+
+    #[test]
+    fn truncate_empty_string() {
+        assert_eq!(truncate_end("", 5), "");
+    }
+
+    // --- make_ws_summary helper ---
+
+    fn make_ws_summary(attention: AttentionLevel) -> WorkspaceSummary {
+        WorkspaceSummary {
+            id: uuid::Uuid::new_v4(),
+            name: "test".into(),
+            path: "/tmp/test".into(),
+            branch: Some("main".into()),
+            ahead: Some(0),
+            behind: Some(0),
+            dirty_files: 0,
+            attention,
+            agent_running: false,
+            shell_running: false,
+            last_activity_unix_ms: 0,
+            ssh_host: None,
+        }
+    }
+
+    // --- tile_border_style tests ---
+
+    #[test]
+    fn tile_border_attention_disabled_selected() {
+        let ws = make_ws_summary(AttentionLevel::None);
+        let style = tile_border_style(&ws, true, false, false);
+        assert_eq!(style.fg, Some(Color::LightBlue));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn tile_border_attention_disabled_not_selected() {
+        let ws = make_ws_summary(AttentionLevel::None);
+        let style = tile_border_style(&ws, false, false, false);
+        assert_eq!(style.fg, Some(Color::White));
+    }
+
+    #[test]
+    fn tile_border_error_flash_on_not_selected() {
+        let ws = make_ws_summary(AttentionLevel::Error);
+        let style = tile_border_style(&ws, false, true, true);
+        assert_eq!(style.fg, Some(Color::Red));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn tile_border_error_flash_off_not_selected() {
+        let ws = make_ws_summary(AttentionLevel::Error);
+        let style = tile_border_style(&ws, false, false, true);
+        assert_eq!(style.fg, Some(Color::LightRed));
+    }
+
+    #[test]
+    fn tile_border_needs_input_flash_on_not_selected() {
+        let ws = make_ws_summary(AttentionLevel::NeedsInput);
+        let style = tile_border_style(&ws, false, true, true);
+        assert_eq!(style.fg, Some(ORANGE));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn tile_border_needs_input_flash_off_not_selected() {
+        let ws = make_ws_summary(AttentionLevel::NeedsInput);
+        let style = tile_border_style(&ws, false, false, true);
+        assert_eq!(style.fg, Some(Color::White));
+    }
+
+    #[test]
+    fn tile_border_none_selected_attention_enabled() {
+        let ws = make_ws_summary(AttentionLevel::None);
+        let style = tile_border_style(&ws, true, false, true);
+        assert_eq!(style.fg, Some(Color::LightBlue));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn tile_border_error_flash_on_selected() {
+        let ws = make_ws_summary(AttentionLevel::Error);
+        let style = tile_border_style(&ws, true, true, true);
+        // Attention overrides selection when flashing
+        assert_eq!(style.fg, Some(Color::Red));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn tile_border_error_flash_off_selected() {
+        let ws = make_ws_summary(AttentionLevel::Error);
+        let style = tile_border_style(&ws, true, false, true);
+        // Selection wins when not flashing
+        assert_eq!(style.fg, Some(Color::LightBlue));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    // --- build_status_badge tests ---
+
+    #[test]
+    fn status_badge_needs_input() {
+        let line = build_status_badge(&AttentionLevel::NeedsInput, true, true);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("input"));
+    }
+
+    #[test]
+    fn status_badge_error() {
+        let line = build_status_badge(&AttentionLevel::Error, true, true);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("error"));
+    }
+
+    #[test]
+    fn status_badge_none_is_empty() {
+        let line = build_status_badge(&AttentionLevel::None, true, true);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn status_badge_attention_disabled_always_empty() {
+        let line = build_status_badge(&AttentionLevel::Error, true, false);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(text, "");
+    }
+
+    // --- build_branch_line tests ---
+
+    #[test]
+    fn branch_line_ahead() {
+        let mut ws = make_ws_summary(AttentionLevel::None);
+        ws.ahead = Some(2);
+        ws.behind = Some(0);
+        let line = build_branch_line(&ws, 40);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("\u{2191}2")); // ↑2
+    }
+
+    #[test]
+    fn branch_line_behind() {
+        let mut ws = make_ws_summary(AttentionLevel::None);
+        ws.ahead = Some(0);
+        ws.behind = Some(3);
+        let line = build_branch_line(&ws, 40);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("\u{2193}3")); // ↓3
+    }
+
+    #[test]
+    fn branch_line_in_sync() {
+        let ws = make_ws_summary(AttentionLevel::None);
+        let line = build_branch_line(&ws, 40);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("="));
+    }
+
+    #[test]
+    fn branch_line_no_tracking() {
+        let mut ws = make_ws_summary(AttentionLevel::None);
+        ws.ahead = None;
+        ws.behind = None;
+        let line = build_branch_line(&ws, 40);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        // No ahead/behind indicators when tracking info is absent
+        assert!(!text.contains("\u{2191}")); // no ↑
+        assert!(!text.contains("\u{2193}")); // no ↓
+        assert!(!text.contains("="));
+    }
+
+    // --- build_path_line tests ---
+
+    #[test]
+    fn path_line_local() {
+        let ws = make_ws_summary(AttentionLevel::None);
+        let line = build_path_line(&ws, 40);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("/tmp/test"));
+        assert!(!text.contains(":")); // no ssh prefix
+    }
+
+    #[test]
+    fn path_line_ssh() {
+        let mut ws = make_ws_summary(AttentionLevel::None);
+        ws.ssh_host = Some("server".to_string());
+        let line = build_path_line(&ws, 60);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("server:"));
+    }
+}

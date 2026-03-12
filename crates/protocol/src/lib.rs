@@ -3,14 +3,14 @@ use uuid::Uuid;
 
 pub type WorkspaceId = Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SshTarget {
     pub host: String,
     pub user: Option<String>,
     pub port: Option<u16>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Route {
     Home,
     Workspace { id: WorkspaceId },
@@ -30,7 +30,7 @@ pub enum TerminalKind {
     Shell,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSummary {
     pub id: WorkspaceId,
     pub name: String,
@@ -47,14 +47,14 @@ pub struct WorkspaceSummary {
     pub ssh_host: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChangedFile {
     pub path: String,
     pub index_status: char,
     pub worktree_status: char,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommitInfo {
     pub hash: String,
     pub message: String,
@@ -62,7 +62,7 @@ pub struct CommitInfo {
     pub date: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BranchInfo {
     pub name: String,
     pub is_head: bool,
@@ -70,19 +70,19 @@ pub struct BranchInfo {
     pub behind: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteBranchInfo {
     pub full_name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TagInfo {
     pub name: String,
     pub hash: String,
     pub date: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct GitState {
     pub branch: Option<String>,
     pub upstream: Option<String>,
@@ -96,7 +96,7 @@ pub struct GitState {
     pub tags: Vec<TagInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
     SetRoute(Route),
     AddWorkspace {
@@ -220,7 +220,7 @@ pub enum Command {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     WorkspaceList {
         items: Vec<WorkspaceSummary>,
@@ -272,4 +272,165 @@ pub enum Event {
     Error {
         message: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+        val: &T,
+    ) {
+        let json = serde_json::to_string(val).expect("serialize");
+        let back: T = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(*val, back);
+    }
+
+    #[test]
+    fn ssh_target_round_trip() {
+        round_trip(&SshTarget { host: "h".into(), user: Some("u".into()), port: Some(22) });
+        round_trip(&SshTarget { host: "h".into(), user: None, port: None });
+    }
+
+    #[test]
+    fn route_round_trip() {
+        round_trip(&Route::Home);
+        round_trip(&Route::Workspace { id: Uuid::new_v4() });
+    }
+
+    #[test]
+    fn attention_level_round_trip() {
+        for level in [AttentionLevel::None, AttentionLevel::Notice, AttentionLevel::NeedsInput, AttentionLevel::Error] {
+            round_trip(&level);
+        }
+    }
+
+    #[test]
+    fn terminal_kind_round_trip() {
+        round_trip(&TerminalKind::Agent);
+        round_trip(&TerminalKind::Shell);
+    }
+
+    #[test]
+    fn workspace_summary_round_trip() {
+        round_trip(&WorkspaceSummary {
+            id: Uuid::new_v4(),
+            name: "test".into(),
+            path: "/tmp/test".into(),
+            branch: Some("main".into()),
+            ahead: Some(1),
+            behind: Some(2),
+            dirty_files: 3,
+            attention: AttentionLevel::None,
+            agent_running: true,
+            shell_running: false,
+            last_activity_unix_ms: 12345,
+            ssh_host: Some("remote".into()),
+        });
+    }
+
+    #[test]
+    fn changed_file_round_trip() {
+        round_trip(&ChangedFile { path: "foo.rs".into(), index_status: 'M', worktree_status: ' ' });
+    }
+
+    #[test]
+    fn commit_info_round_trip() {
+        round_trip(&CommitInfo { hash: "abc123".into(), message: "fix".into(), author: "dev".into(), date: "2h ago".into() });
+    }
+
+    #[test]
+    fn branch_info_round_trip() {
+        round_trip(&BranchInfo { name: "main".into(), is_head: true, ahead: Some(1), behind: None });
+    }
+
+    #[test]
+    fn tag_info_round_trip() {
+        round_trip(&TagInfo { name: "v1.0".into(), hash: "abc".into(), date: "1d ago".into() });
+    }
+
+    #[test]
+    fn git_state_round_trip() {
+        round_trip(&GitState::default());
+        round_trip(&GitState {
+            branch: Some("main".into()),
+            upstream: Some("origin/main".into()),
+            ahead: Some(1),
+            behind: Some(0),
+            changed: vec![ChangedFile { path: "f.rs".into(), index_status: 'M', worktree_status: ' ' }],
+            recent_commits: vec![CommitInfo { hash: "a".into(), message: "m".into(), author: "a".into(), date: "d".into() }],
+            local_branches: vec![BranchInfo { name: "main".into(), is_head: true, ahead: None, behind: None }],
+            remote_branches: vec![RemoteBranchInfo { full_name: "origin/main".into() }],
+            tags: vec![TagInfo { name: "v1".into(), hash: "h".into(), date: "d".into() }],
+        });
+    }
+
+    #[test]
+    fn command_variants_round_trip() {
+        let id = Uuid::new_v4();
+        let commands = vec![
+            Command::SetRoute(Route::Home),
+            Command::SetRoute(Route::Workspace { id }),
+            Command::AddWorkspace { name: "ws".into(), path: "/p".into(), ssh: None },
+            Command::AddWorkspace {
+                name: "ws".into(),
+                path: "/p".into(),
+                ssh: Some(SshTarget { host: "h".into(), user: Some("u".into()), port: Some(22) }),
+            },
+            Command::RemoveWorkspace { id },
+            Command::RenameWorkspace { id, name: "n".into() },
+            Command::SetAttention { id, level: AttentionLevel::Error },
+            Command::ClearAttention { id },
+            Command::RefreshGit { id },
+            Command::LoadDiff { id, file: "f".into() },
+            Command::LoadCommitDiff { id, hash: "h".into() },
+            Command::LoadCommitFiles { id, hash: "h".into() },
+            Command::LoadCommitFileDiff { id, hash: "h".into(), file: "f".into() },
+            Command::GitStageFile { id, file: "f".into() },
+            Command::GitUnstageFile { id, file: "f".into() },
+            Command::GitStageAll { id },
+            Command::GitUnstageAll { id },
+            Command::GitCommit { id, message: "m".into() },
+            Command::GitCheckoutBranch { id, branch: "b".into() },
+            Command::GitCheckoutRemoteBranch { id, remote_branch: "origin/b".into(), local_name: "b".into() },
+            Command::GitCreateBranch { id, branch: "b".into() },
+            Command::GitPush { id },
+            Command::GitPull { id },
+            Command::GitFetch { id },
+            Command::GitDiscardFile { id, file: "f".into() },
+            Command::GitStash { id, message: Some("msg".into()) },
+            Command::GitStash { id, message: None },
+            Command::GitStashPullPop { id },
+            Command::StartTerminal { id, kind: TerminalKind::Agent, tab_id: None, cmd: vec!["bash".into()] },
+            Command::StartTerminal { id, kind: TerminalKind::Shell, tab_id: Some("t".into()), cmd: vec![] },
+            Command::StopTerminal { id, kind: TerminalKind::Agent, tab_id: None },
+            Command::SendTerminalInput { id, kind: TerminalKind::Shell, tab_id: None, data_b64: "aGVsbG8=".into() },
+            Command::ResizeTerminal { id, kind: TerminalKind::Shell, tab_id: None, cols: 80, rows: 24 },
+        ];
+        for cmd in &commands {
+            round_trip(cmd);
+        }
+    }
+
+    #[test]
+    fn event_variants_round_trip() {
+        let id = Uuid::new_v4();
+        let events = vec![
+            Event::WorkspaceList { items: vec![] },
+            Event::WorkspaceGitUpdated { id, git: GitState::default() },
+            Event::WorkspaceDiffUpdated { id, file: "f".into(), diff: "d".into() },
+            Event::CommitFilesLoaded { id, hash: "h".into(), files: vec!["a".into()] },
+            Event::WorkspaceAttentionChanged { id, level: AttentionLevel::NeedsInput },
+            Event::TerminalStarted { id, kind: TerminalKind::Agent, tab_id: None },
+            Event::TerminalExited { id, kind: TerminalKind::Shell, tab_id: Some("t".into()), code: Some(0) },
+            Event::TerminalExited { id, kind: TerminalKind::Shell, tab_id: None, code: None },
+            Event::TerminalOutput { id, kind: TerminalKind::Agent, tab_id: None, data_b64: "b64".into() },
+            Event::GitActionResult { id, action: "push".into(), success: true, message: "ok".into() },
+            Event::Error { message: "oops".into() },
+        ];
+        for evt in &events {
+            round_trip(evt);
+        }
+    }
 }

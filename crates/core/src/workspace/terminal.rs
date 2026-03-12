@@ -151,3 +151,59 @@ fn is_default_shell_cmd(cmd: &[String]) -> bool {
         || prog == "fish";
     is_shell && cmd.iter().skip(1).all(|a| a.starts_with('-'))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn empty_is_default_shell() {
+        assert!(is_default_shell_cmd(&[]));
+    }
+
+    #[test]
+    fn bash_is_default_shell() {
+        assert!(is_default_shell_cmd(&s(&["bash"])));
+    }
+
+    #[test]
+    fn bash_with_flag_is_default() {
+        assert!(is_default_shell_cmd(&s(&["bash", "-l"])));
+    }
+
+    #[test]
+    fn zsh_is_default_shell() {
+        assert!(is_default_shell_cmd(&s(&["zsh"])));
+    }
+
+    #[test]
+    fn full_path_shell_is_default() {
+        assert!(is_default_shell_cmd(&s(&["/bin/bash"])));
+        assert!(is_default_shell_cmd(&s(&["/usr/bin/zsh"])));
+        assert!(is_default_shell_cmd(&s(&["/bin/sh", "-l"])));
+    }
+
+    #[test]
+    fn fish_is_default_shell() {
+        assert!(is_default_shell_cmd(&s(&["fish"])));
+    }
+
+    #[test]
+    fn vim_is_not_default_shell() {
+        assert!(!is_default_shell_cmd(&s(&["vim"])));
+    }
+
+    #[test]
+    fn bash_with_script_is_not_default() {
+        assert!(!is_default_shell_cmd(&s(&["bash", "script.sh"])));
+    }
+
+    #[test]
+    fn bash_with_command_flag_is_not_default() {
+        assert!(!is_default_shell_cmd(&s(&["bash", "-c", "echo hello"])));
+    }
+}

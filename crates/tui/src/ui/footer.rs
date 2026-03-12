@@ -264,3 +264,131 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         area,
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{TuiApp, Focus, DirBrowserState, SshHistoryPicker};
+    use protocol::{WorkspaceSummary, AttentionLevel, GitState, ChangedFile};
+    use uuid::Uuid;
+
+    fn hints_contain(line: &Line, keyword: &str) -> bool {
+        line.spans.iter().any(|s| s.content.contains(keyword))
+    }
+
+    fn make_ws() -> WorkspaceSummary {
+        WorkspaceSummary {
+            id: Uuid::new_v4(),
+            name: "test".into(),
+            path: "/tmp/test".into(),
+            branch: Some("main".into()),
+            ahead: Some(0),
+            behind: Some(0),
+            dirty_files: 0,
+            attention: AttentionLevel::None,
+            agent_running: false,
+            shell_running: false,
+            last_activity_unix_ms: 0,
+            ssh_host: None,
+        }
+    }
+
+    fn app_with_workspace() -> (TuiApp, Uuid) {
+        let mut app = TuiApp::default();
+        let ws = make_ws();
+        let id = ws.id;
+        app.set_workspaces(vec![ws]);
+        app.open_workspace(id);
+        (app, id)
+    }
+
+    #[test]
+    fn home_default_hints() {
+        let app = TuiApp::default();
+        let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "open"));
+        assert!(hints_contain(&line, "new"));
+        assert!(hints_contain(&line, "quit"));
+    }
+
+    #[test]
+    fn home_adding_workspace_hints() {
+        let mut app = TuiApp::default();
+        app.dir_browser = Some(DirBrowserState {
+            path_input: "/tmp".to_string(),
+            entries: vec![],
+            selected: 0,
+            show_hidden: false,
+            editing_path: false,
+        });
+        let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "cancel"));
+    }
+
+    #[test]
+    fn home_confirming_delete_hints() {
+        let mut app = TuiApp::default();
+        app.pending_delete_workspace = Some(Uuid::new_v4());
+        let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "confirm delete"));
+    }
+
+    #[test]
+    fn home_ssh_history_picker_hints() {
+        let mut app = TuiApp::default();
+        app.ssh_history_picker = Some(SshHistoryPicker { selected: 0 });
+        let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "navigate"));
+        assert!(hints_contain(&line, "select"));
+    }
+
+    #[test]
+    fn workspace_terminal_focus_hints() {
+        let (app, _id) = app_with_workspace();
+        // open_workspace sets focus to WsTerminal
+        assert_eq!(app.focus, Focus::WsTerminal);
+        let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "passthrough"));
+    }
+
+    #[test]
+    fn workspace_log_uncommitted_header_hints() {
+        let (mut app, _id) = app_with_workspace();
+        app.focus = Focus::WsLog;
+        app.ws_selected_commit = 0;
+        let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "stage all"));
+        assert!(hints_contain(&line, "commit"));
+    }
+
+    #[test]
+    fn workspace_log_changed_file_hints() {
+        let (mut app, id) = app_with_workspace();
+        app.focus = Focus::WsLog;
+        // Insert git state with a changed file
+        let git = GitState {
+            changed: vec![ChangedFile {
+                path: "foo.rs".into(),
+                index_status: 'M',
+                worktree_status: ' ',
+            }],
+            ..GitState::default()
+        };
+        app.workspace_git.insert(id, git);
+        // Expand uncommitted section and select the first file (index 1)
+        app.ws_uncommitted_expanded = true;
+        app.ws_selected_commit = 1;
+        let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "discard"));
+    }
+
+    #[test]
+    fn workspace_branches_focus_hints() {
+        let (mut app, _id) = app_with_workspace();
+        app.focus = Focus::WsBranches;
+        let line = build_footer_hints(&app);
+        assert!(hints_contain(&line, "checkout"));
+        assert!(hints_contain(&line, "pull"));
+        assert!(hints_contain(&line, "push"));
+    }
+}

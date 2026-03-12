@@ -795,3 +795,260 @@ pub async fn git_stash(repo: &Path, message: Option<&str>, ssh: Option<&SshTarge
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_porcelain_line ---
+
+    #[test]
+    fn porcelain_modified() {
+        let f = parse_porcelain_line(" M foo.rs").unwrap();
+        assert_eq!(f.path, "foo.rs");
+        assert_eq!(f.index_status, ' ');
+        assert_eq!(f.worktree_status, 'M');
+    }
+
+    #[test]
+    fn porcelain_untracked() {
+        let f = parse_porcelain_line("?? new.txt").unwrap();
+        assert_eq!(f.path, "new.txt");
+        assert_eq!(f.index_status, '?');
+        assert_eq!(f.worktree_status, '?');
+    }
+
+    #[test]
+    fn porcelain_added() {
+        let f = parse_porcelain_line("A  added.rs").unwrap();
+        assert_eq!(f.path, "added.rs");
+        assert_eq!(f.index_status, 'A');
+        assert_eq!(f.worktree_status, ' ');
+    }
+
+    #[test]
+    fn porcelain_too_short_returns_none() {
+        assert!(parse_porcelain_line("MM").is_none());
+        assert!(parse_porcelain_line("").is_none());
+        assert!(parse_porcelain_line("M").is_none());
+    }
+
+    #[test]
+    fn porcelain_empty_path_returns_none() {
+        // "XY " has 3 chars but the path portion is empty/whitespace
+        assert!(parse_porcelain_line("M  ").is_none());
+    }
+
+    // --- parse_ahead_behind ---
+
+    #[test]
+    fn ahead_behind_normal() {
+        assert_eq!(parse_ahead_behind("3\t5"), (Some(3), Some(5)));
+    }
+
+    #[test]
+    fn ahead_behind_zeros() {
+        assert_eq!(parse_ahead_behind("0\t0"), (Some(0), Some(0)));
+    }
+
+    #[test]
+    fn ahead_behind_empty() {
+        assert_eq!(parse_ahead_behind(""), (None, None));
+    }
+
+    #[test]
+    fn ahead_behind_whitespace() {
+        assert_eq!(parse_ahead_behind("  3\t5  "), (Some(3), Some(5)));
+    }
+
+    #[test]
+    fn ahead_behind_single_value() {
+        assert_eq!(parse_ahead_behind("3"), (None, None));
+    }
+
+    // --- parse_track_info ---
+
+    #[test]
+    fn track_info_ahead_only() {
+        assert_eq!(parse_track_info("[ahead 1]"), (Some(1), None));
+    }
+
+    #[test]
+    fn track_info_behind_only() {
+        assert_eq!(parse_track_info("[behind 2]"), (None, Some(2)));
+    }
+
+    #[test]
+    fn track_info_both() {
+        assert_eq!(parse_track_info("[ahead 1, behind 2]"), (Some(1), Some(2)));
+    }
+
+    #[test]
+    fn track_info_gone() {
+        assert_eq!(parse_track_info("[gone]"), (None, None));
+    }
+
+    #[test]
+    fn track_info_empty() {
+        assert_eq!(parse_track_info("[]"), (None, None));
+    }
+
+    // --- parse_commits_output ---
+
+    #[test]
+    fn commits_output_normal() {
+        let input = "abc123\x1ffix bug\x1fdev\x1f2h ago\ndef456\x1fadd feature\x1fother\x1f1d ago";
+        let commits = parse_commits_output(input);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].hash, "abc123");
+        assert_eq!(commits[0].message, "fix bug");
+        assert_eq!(commits[0].author, "dev");
+        assert_eq!(commits[0].date, "2h ago");
+        assert_eq!(commits[1].hash, "def456");
+    }
+
+    #[test]
+    fn commits_output_skips_malformed() {
+        let input = "abc123\x1ffix bug\x1fdev\x1f2h ago\nbad line\ndef456\x1fadd\x1fother\x1f1d ago";
+        let commits = parse_commits_output(input);
+        assert_eq!(commits.len(), 2);
+    }
+
+    #[test]
+    fn commits_output_empty() {
+        assert!(parse_commits_output("").is_empty());
+    }
+
+    // --- parse_tags_output ---
+
+    #[test]
+    fn tags_output_normal() {
+        let input = "v1.0\x1fabc123\x1f2 days ago\nv0.9\x1fdef456\x1f1 week ago";
+        let tags = parse_tags_output(input);
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].name, "v1.0");
+        assert_eq!(tags[0].hash, "abc123");
+        assert_eq!(tags[0].date, "2 days ago");
+    }
+
+    #[test]
+    fn tags_output_skips_malformed() {
+        let input = "v1.0\x1fabc123\x1f2 days ago\nbad line";
+        let tags = parse_tags_output(input);
+        assert_eq!(tags.len(), 1);
+    }
+
+    #[test]
+    fn tags_output_empty() {
+        assert!(parse_tags_output("").is_empty());
+    }
+
+    // --- parse_local_branches_output ---
+
+    #[test]
+    fn local_branches_head_with_tracking() {
+        let input = "* main [ahead 1, behind 2]";
+        let branches = parse_local_branches_output(input);
+        assert_eq!(branches.len(), 1);
+        assert!(branches[0].is_head);
+        assert_eq!(branches[0].name, "main");
+        assert_eq!(branches[0].ahead, Some(1));
+        assert_eq!(branches[0].behind, Some(2));
+    }
+
+    #[test]
+    fn local_branches_not_head() {
+        let input = "  feature-branch";
+        let branches = parse_local_branches_output(input);
+        assert_eq!(branches.len(), 1);
+        assert!(!branches[0].is_head);
+        assert_eq!(branches[0].name, "feature-branch");
+        assert_eq!(branches[0].ahead, None);
+        assert_eq!(branches[0].behind, None);
+    }
+
+    #[test]
+    fn local_branches_multiple() {
+        let input = "* main [ahead 1]\n  dev\n  feature [behind 3]";
+        let branches = parse_local_branches_output(input);
+        assert_eq!(branches.len(), 3);
+    }
+
+    #[test]
+    fn local_branches_empty() {
+        assert!(parse_local_branches_output("").is_empty());
+    }
+
+    #[test]
+    fn local_branches_skips_blank_lines() {
+        let input = "* main\n\n  dev\n  ";
+        let branches = parse_local_branches_output(input);
+        assert_eq!(branches.len(), 2);
+    }
+
+    // --- parse_remote_branches_output ---
+
+    #[test]
+    fn remote_branches_filters_head() {
+        let input = "origin/HEAD\norigin/main\norigin/dev";
+        let branches = parse_remote_branches_output(input);
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0].full_name, "origin/main");
+        assert_eq!(branches[1].full_name, "origin/dev");
+    }
+
+    #[test]
+    fn remote_branches_trims_whitespace() {
+        let input = "  origin/main  \n  origin/dev  ";
+        let branches = parse_remote_branches_output(input);
+        assert_eq!(branches[0].full_name, "origin/main");
+    }
+
+    #[test]
+    fn remote_branches_empty() {
+        assert!(parse_remote_branches_output("").is_empty());
+    }
+
+    // --- parse_status_output ---
+
+    #[test]
+    fn status_output_multiline() {
+        let input = " M foo.rs\n?? bar.txt\nA  baz.rs";
+        let files = parse_status_output(input);
+        assert_eq!(files.len(), 3);
+    }
+
+    #[test]
+    fn status_output_empty() {
+        assert!(parse_status_output("").is_empty());
+    }
+
+    // --- parse_branch_output / parse_upstream_name ---
+
+    #[test]
+    fn branch_output_normal() {
+        assert_eq!(parse_branch_output("main"), Some("main".to_string()));
+    }
+
+    #[test]
+    fn branch_output_with_whitespace() {
+        assert_eq!(parse_branch_output("  main  \n"), Some("main".to_string()));
+    }
+
+    #[test]
+    fn branch_output_empty() {
+        assert_eq!(parse_branch_output(""), None);
+        assert_eq!(parse_branch_output("   "), None);
+    }
+
+    #[test]
+    fn upstream_name_normal() {
+        assert_eq!(parse_upstream_name("origin/main"), Some("origin/main".to_string()));
+    }
+
+    #[test]
+    fn upstream_name_empty() {
+        assert_eq!(parse_upstream_name(""), None);
+        assert_eq!(parse_upstream_name("  "), None);
+    }
+}

@@ -1015,4 +1015,241 @@ mod tests {
         assert_eq!(line.spans[1].style.fg, Some(Color::Red));
         assert!(line.spans[1].style.add_modifier.contains(Modifier::BOLD));
     }
+
+    // --- hit_test tests ---
+
+    use protocol::WorkspaceSummary;
+    use crate::app::Focus;
+
+    fn make_ws_summary() -> WorkspaceSummary {
+        WorkspaceSummary {
+            id: uuid::Uuid::new_v4(),
+            name: "test".into(),
+            path: "/tmp/test".into(),
+            branch: Some("main".into()),
+            ahead: Some(0),
+            behind: Some(0),
+            dirty_files: 0,
+            attention: AttentionLevel::None,
+            agent_running: false,
+            shell_running: false,
+            last_activity_unix_ms: 0,
+            ssh_host: None,
+        }
+    }
+
+    fn app_with_workspace() -> (crate::app::TuiApp, uuid::Uuid) {
+        let mut app = crate::app::TuiApp::default();
+        let ws = make_ws_summary();
+        let id = ws.id;
+        app.set_workspaces(vec![ws]);
+        app.open_workspace(id);
+        (app, id)
+    }
+
+    #[test]
+    fn hit_test_header() {
+        let (app, _) = app_with_workspace();
+        let area = Rect::new(0, 0, 120, 40);
+        // Header is the first 3 rows (Constraint::Length(3))
+        let result = hit_test(area, &app, 10, 1);
+        assert_eq!(result, Some(WorkspaceHit::Header));
+    }
+
+    #[test]
+    fn hit_test_terminal_pane() {
+        let (app, _) = app_with_workspace();
+        let area = Rect::new(0, 0, 120, 40);
+        // Terminal pane is below tabs, in the upper body area.
+        // Layout: header(3) + body split. Terminal tabs are Length(5), terminal pane is Min(3).
+        // With WsTerminal focus the terminal gets 72% of body.
+        // Body = rows 3..38. 72% of 35 = ~25. Tabs = 5 rows (rows 3..8), terminal = rest (rows 8..28).
+        let result = hit_test(area, &app, 10, 15);
+        assert_eq!(result, Some(WorkspaceHit::TerminalPane));
+    }
+
+    #[test]
+    fn hit_test_git_log() {
+        let (mut app, _) = app_with_workspace();
+        let area = Rect::new(0, 0, 120, 40);
+        // Switch focus to something neutral so git panes get a reasonable size.
+        app.focus = Focus::WsLog;
+        // Git panes are in the lower body section. With WsLog focus the git area gets 65%.
+        // Body = 35 rows (3..38). Terminal gets 35% = ~12 rows, git gets 65% = ~23 rows.
+        // Git area starts around row 15. Left 35% has log (top) and branches (bottom).
+        // The git log is in the top half of the left git area.
+        let l = layout(area, app.focus, app.terminal_fullscreen);
+        let result = hit_test(area, &app, l.git_log.x + 1, l.git_log.y + 1);
+        assert!(matches!(result, Some(WorkspaceHit::LogList(_))));
+    }
+
+    #[test]
+    fn hit_test_branches_pane() {
+        let (mut app, _) = app_with_workspace();
+        let area = Rect::new(0, 0, 120, 40);
+        app.focus = Focus::WsBranches;
+        let l = layout(area, app.focus, app.terminal_fullscreen);
+        let result = hit_test(area, &app, l.git_branches.x + 1, l.git_branches.y + 1);
+        assert!(matches!(result, Some(WorkspaceHit::BranchesPane(_))));
+    }
+
+    #[test]
+    fn hit_test_diff_pane() {
+        let (mut app, _) = app_with_workspace();
+        let area = Rect::new(0, 0, 120, 40);
+        app.focus = Focus::WsDiff;
+        let l = layout(area, app.focus, app.terminal_fullscreen);
+        let result = hit_test(area, &app, l.git_diff.x + 1, l.git_diff.y + 1);
+        assert_eq!(result, Some(WorkspaceHit::DiffPane));
+    }
+
+    #[test]
+    fn hit_test_terminal_tabs() {
+        let (app, _) = app_with_workspace();
+        let area = Rect::new(0, 0, 120, 40);
+        let l = layout(area, app.focus, app.terminal_fullscreen);
+        let result = hit_test(area, &app, l.terminal_tabs.x + 1, l.terminal_tabs.y + 1);
+        assert!(matches!(result, Some(WorkspaceHit::TerminalTab(_))));
+    }
+
+    #[test]
+    fn hit_test_footer_returns_none() {
+        let (app, _) = app_with_workspace();
+        let area = Rect::new(0, 0, 120, 40);
+        // Footer is the last 2 rows: rows 38..40
+        let result = hit_test(area, &app, 10, 39);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn hit_test_fullscreen_git_area_returns_terminal_or_none() {
+        let (mut app, _) = app_with_workspace();
+        let area = Rect::new(0, 0, 120, 40);
+        app.terminal_fullscreen = true;
+        // In fullscreen mode, git panes are zero-sized.
+        // The area that would normally be git log should now be terminal pane or None.
+        let l_normal = layout(area, Focus::WsLog, false);
+        let git_log_x = l_normal.git_log.x + 1;
+        let git_log_y = l_normal.git_log.y + 1;
+        let result = hit_test(area, &app, git_log_x, git_log_y);
+        // Should be TerminalPane (terminal expands to fill) or None, but NOT LogList
+        assert!(!matches!(result, Some(WorkspaceHit::LogList(_))));
+    }
+
+    // --- render smoke tests ---
+
+    use crate::app::TuiApp;
+    use protocol::{BranchInfo, ChangedFile, CommitInfo, GitState, RemoteBranchInfo};
+
+    fn smoke_render_workspace(app: &TuiApp, width: u16, height: u16) {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                super::render(frame, area, app);
+            })
+            .unwrap();
+    }
+
+    fn make_git_state() -> GitState {
+        GitState {
+            branch: Some("main".into()),
+            upstream: Some("origin/main".into()),
+            ahead: Some(1),
+            behind: Some(0),
+            changed: vec![
+                ChangedFile {
+                    path: "src/lib.rs".into(),
+                    index_status: 'M',
+                    worktree_status: ' ',
+                },
+                ChangedFile {
+                    path: "README.md".into(),
+                    index_status: '?',
+                    worktree_status: '?',
+                },
+            ],
+            recent_commits: vec![
+                CommitInfo {
+                    hash: "abc1234".into(),
+                    message: "feat: initial commit".into(),
+                    author: "dev".into(),
+                    date: "2025-01-01".into(),
+                },
+                CommitInfo {
+                    hash: "def5678".into(),
+                    message: "fix: bug fix".into(),
+                    author: "dev".into(),
+                    date: "2025-01-02".into(),
+                },
+            ],
+            local_branches: vec![
+                BranchInfo {
+                    name: "main".into(),
+                    is_head: true,
+                    ahead: Some(1),
+                    behind: Some(0),
+                },
+                BranchInfo {
+                    name: "feature".into(),
+                    is_head: false,
+                    ahead: Some(0),
+                    behind: Some(2),
+                },
+            ],
+            remote_branches: vec![RemoteBranchInfo {
+                full_name: "origin/main".into(),
+            }],
+            tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn render_workspace_basic() {
+        let (app, _) = app_with_workspace();
+        smoke_render_workspace(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_workspace_with_git_state() {
+        let (mut app, id) = app_with_workspace();
+        app.set_workspace_git(id, make_git_state());
+        smoke_render_workspace(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_workspace_fullscreen() {
+        let (mut app, _) = app_with_workspace();
+        app.terminal_fullscreen = true;
+        smoke_render_workspace(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_workspace_commit_modal() {
+        let (mut app, _) = app_with_workspace();
+        app.commit_input = Some("msg".into());
+        smoke_render_workspace(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_workspace_create_branch_modal() {
+        let (mut app, _) = app_with_workspace();
+        app.create_branch_input = Some("new-branch".into());
+        smoke_render_workspace(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_workspace_very_small_terminal() {
+        let (app, _) = app_with_workspace();
+        smoke_render_workspace(&app, 20, 10);
+    }
+
+    #[test]
+    fn render_workspace_expanded_uncommitted() {
+        let (mut app, id) = app_with_workspace();
+        app.set_workspace_git(id, make_git_state());
+        app.ws_uncommitted_expanded = true;
+        smoke_render_workspace(&app, 120, 40);
+    }
 }

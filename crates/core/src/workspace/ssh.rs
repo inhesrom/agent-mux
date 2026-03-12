@@ -147,3 +147,83 @@ pub fn ssh_args_for_terminal(target: &SshTarget, cwd: &Path) -> Vec<String> {
     ));
     args
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::SshTarget;
+    use std::path::Path;
+
+    #[test]
+    fn shell_quote_basic() {
+        assert_eq!(shell_quote("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_quote_with_single_quotes() {
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn shell_quote_empty() {
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn shell_quote_spaces_and_special() {
+        assert_eq!(shell_quote("a b$c"), "'a b$c'");
+    }
+
+    #[test]
+    fn ssh_destination_with_user() {
+        let target = SshTarget { host: "example.com".into(), user: Some("admin".into()), port: None };
+        assert_eq!(ssh_destination(&target), "admin@example.com");
+    }
+
+    #[test]
+    fn ssh_destination_without_user() {
+        let target = SshTarget { host: "example.com".into(), user: None, port: None };
+        assert_eq!(ssh_destination(&target), "example.com");
+    }
+
+    #[test]
+    fn control_socket_deterministic() {
+        let t1 = SshTarget { host: "h".into(), user: Some("u".into()), port: Some(22) };
+        let t2 = SshTarget { host: "h".into(), user: Some("u".into()), port: Some(22) };
+        assert_eq!(control_socket_path(&t1), control_socket_path(&t2));
+    }
+
+    #[test]
+    fn control_socket_different_targets() {
+        let t1 = SshTarget { host: "host1".into(), user: None, port: None };
+        let t2 = SshTarget { host: "host2".into(), user: None, port: None };
+        assert_ne!(control_socket_path(&t1), control_socket_path(&t2));
+    }
+
+    #[test]
+    fn control_socket_starts_with_expected_prefix() {
+        let t = SshTarget { host: "h".into(), user: None, port: None };
+        assert!(control_socket_path(&t).starts_with("/tmp/anvl-ssh-"));
+    }
+
+    #[test]
+    fn ssh_args_for_terminal_basic() {
+        let target = SshTarget { host: "example.com".into(), user: Some("admin".into()), port: None };
+        let args = ssh_args_for_terminal(&target, Path::new("/home/user/project"));
+        assert_eq!(args[0], "ssh");
+        assert_eq!(args[1], "-t");
+        assert!(args.contains(&"admin@example.com".to_string()));
+        // Should contain cd command at the end
+        let last = args.last().unwrap();
+        assert!(last.starts_with("cd "));
+        assert!(last.contains("/home/user/project"));
+    }
+
+    #[test]
+    fn ssh_args_for_terminal_with_port() {
+        let target = SshTarget { host: "h".into(), user: None, port: Some(2222) };
+        let args = ssh_args_for_terminal(&target, Path::new("/tmp"));
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"2222".to_string()));
+    }
+}

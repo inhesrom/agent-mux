@@ -1573,3 +1573,912 @@ fn save_ssh_history(history: &[SshHistoryEntry]) {
         let _ = fs::write(path, raw);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol::{AttentionLevel, GitState, WorkspaceSummary, CommitInfo, ChangedFile, BranchInfo, RemoteBranchInfo};
+    use uuid::Uuid;
+
+    fn make_ws(name: &str) -> WorkspaceSummary {
+        WorkspaceSummary {
+            id: Uuid::new_v4(),
+            name: name.to_string(),
+            path: format!("/tmp/{name}"),
+            branch: Some("main".into()),
+            ahead: Some(0),
+            behind: Some(0),
+            dirty_files: 0,
+            attention: AttentionLevel::None,
+            agent_running: false,
+            shell_running: false,
+            last_activity_unix_ms: 0,
+            ssh_host: None,
+        }
+    }
+
+    fn make_git_state() -> GitState {
+        GitState {
+            branch: Some("main".into()),
+            upstream: Some("origin/main".into()),
+            ahead: Some(0),
+            behind: Some(0),
+            changed: vec![
+                ChangedFile { path: "a.rs".into(), index_status: 'M', worktree_status: ' ' },
+                ChangedFile { path: "b.rs".into(), index_status: '?', worktree_status: '?' },
+            ],
+            recent_commits: vec![
+                CommitInfo { hash: "abc".into(), message: "first".into(), author: "dev".into(), date: "1h".into() },
+                CommitInfo { hash: "def".into(), message: "second".into(), author: "dev".into(), date: "2h".into() },
+            ],
+            local_branches: vec![
+                BranchInfo { name: "main".into(), is_head: true, ahead: None, behind: None },
+                BranchInfo { name: "dev".into(), is_head: false, ahead: Some(1), behind: None },
+            ],
+            remote_branches: vec![
+                RemoteBranchInfo { full_name: "origin/main".into() },
+            ],
+            tags: vec![],
+        }
+    }
+
+    fn app_with_workspaces(n: usize) -> TuiApp {
+        let mut app = TuiApp::default();
+        let ws: Vec<_> = (0..n).map(|i| make_ws(&format!("ws{i}"))).collect();
+        app.set_workspaces(ws);
+        app
+    }
+
+    // ===== Navigation =====
+
+    #[test]
+    fn move_home_selection_right() {
+        let mut app = app_with_workspaces(6);
+        app.home_selected = 0;
+        app.move_home_selection(1, 0);
+        assert_eq!(app.home_selected, 1);
+    }
+
+    #[test]
+    fn move_home_selection_left_clamps() {
+        let mut app = app_with_workspaces(6);
+        app.home_selected = 0;
+        app.move_home_selection(-1, 0);
+        assert_eq!(app.home_selected, 0);
+    }
+
+    #[test]
+    fn move_home_selection_down() {
+        let mut app = app_with_workspaces(6); // 3 cols, 2 rows
+        app.home_selected = 0;
+        app.move_home_selection(0, 1);
+        assert_eq!(app.home_selected, 3);
+    }
+
+    #[test]
+    fn move_home_selection_down_clamps_to_last() {
+        let mut app = app_with_workspaces(4); // 3 cols, 2nd row has 1 item
+        app.home_selected = 2; // last in first row
+        app.move_home_selection(0, 1);
+        assert_eq!(app.home_selected, 3); // clamped to last item
+    }
+
+    #[test]
+    fn move_home_selection_empty() {
+        let mut app = TuiApp::default();
+        app.move_home_selection(1, 1);
+        assert_eq!(app.home_selected, 0);
+    }
+
+    #[test]
+    fn set_home_selection_clamps() {
+        let mut app = app_with_workspaces(3);
+        app.set_home_selection(10);
+        assert_eq!(app.home_selected, 2);
+    }
+
+    #[test]
+    fn set_home_selection_empty() {
+        let mut app = TuiApp::default();
+        app.set_home_selection(5);
+        assert_eq!(app.home_selected, 0);
+    }
+
+    #[test]
+    fn open_workspace_sets_route_and_focus() {
+        let mut app = app_with_workspaces(2);
+        let id = app.workspaces[1].id;
+        app.open_workspace(id);
+        assert!(matches!(app.route, Route::Workspace { id: wid } if wid == id));
+        assert_eq!(app.focus, Focus::WsTerminal);
+    }
+
+    #[test]
+    fn go_home_resets_state() {
+        let mut app = app_with_workspaces(2);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.terminal_fullscreen = true;
+        app.go_home();
+        assert!(matches!(app.route, Route::Home));
+        assert_eq!(app.focus, Focus::HomeGrid);
+        assert!(!app.terminal_fullscreen);
+    }
+
+    // ===== Terminal tab management =====
+
+    #[test]
+    fn add_shell_tab_increments_counter() {
+        let mut app = TuiApp::default();
+        let initial = app.ws_next_shell_tab;
+        app.add_shell_tab();
+        assert_eq!(app.ws_next_shell_tab, initial + 1);
+        assert_eq!(app.ws_active_tab, app.ws_tabs.len() - 1);
+        assert_eq!(app.ws_tabs.last().unwrap().kind, TerminalKind::Shell);
+    }
+
+    #[test]
+    fn cannot_close_agent_tab() {
+        let mut app = TuiApp::default();
+        app.ws_active_tab = 0; // agent tab
+        assert!(!app.can_close_active_tab());
+        assert!(app.close_active_tab().is_none());
+    }
+
+    #[test]
+    fn cannot_close_last_tab() {
+        let mut app = TuiApp::default();
+        // Remove all shell tabs, keep only agent
+        app.ws_tabs = vec![TerminalTab { id: "agent".into(), label: "agent".into(), kind: TerminalKind::Agent, passthrough: false }];
+        app.ws_active_tab = 0;
+        assert!(!app.can_close_active_tab());
+    }
+
+    #[test]
+    fn close_shell_tab() {
+        let mut app = TuiApp::default();
+        app.add_shell_tab(); // now 3 tabs: agent, shell, shell-2
+        app.ws_active_tab = 2; // select last shell
+        assert!(app.can_close_active_tab());
+        let removed = app.close_active_tab();
+        assert!(removed.is_some());
+        assert_eq!(app.ws_tabs.len(), 2);
+    }
+
+    #[test]
+    fn move_terminal_tab_clamps() {
+        let mut app = TuiApp::default(); // 2 tabs
+        app.ws_active_tab = 0;
+        app.move_terminal_tab(-1);
+        assert_eq!(app.ws_active_tab, 0);
+        app.move_terminal_tab(100);
+        assert_eq!(app.ws_active_tab, app.ws_tabs.len() - 1);
+    }
+
+    #[test]
+    fn toggle_passthrough() {
+        let mut app = TuiApp::default();
+        app.ws_active_tab = 1; // shell tab
+        assert!(!app.active_tab_passthrough());
+        app.toggle_active_tab_passthrough();
+        assert!(app.active_tab_passthrough());
+        app.toggle_active_tab_passthrough();
+        assert!(!app.active_tab_passthrough());
+    }
+
+    // ===== Git log navigation =====
+
+    #[test]
+    fn total_log_items_no_workspace() {
+        let app = TuiApp::default();
+        assert_eq!(app.total_log_items(), 1); // just header
+    }
+
+    #[test]
+    fn total_log_items_with_git() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        // header(1) + 2 commits = 3 (uncommitted not expanded)
+        assert_eq!(app.total_log_items(), 3);
+    }
+
+    #[test]
+    fn total_log_items_with_expanded_uncommitted() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.ws_uncommitted_expanded = true;
+        // header(1) + 2 changed files + 2 commits = 5
+        assert_eq!(app.total_log_items(), 5);
+    }
+
+    #[test]
+    fn log_item_at_index_zero_is_header() {
+        let app = TuiApp::default();
+        assert_eq!(app.log_item_at(0), LogItem::UncommittedHeader);
+    }
+
+    #[test]
+    fn log_item_at_commits() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        assert_eq!(app.log_item_at(1), LogItem::Commit(0));
+        assert_eq!(app.log_item_at(2), LogItem::Commit(1));
+    }
+
+    #[test]
+    fn log_item_at_expanded_files() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.ws_uncommitted_expanded = true;
+        assert_eq!(app.log_item_at(0), LogItem::UncommittedHeader);
+        assert_eq!(app.log_item_at(1), LogItem::ChangedFile(0));
+        assert_eq!(app.log_item_at(2), LogItem::ChangedFile(1));
+        assert_eq!(app.log_item_at(3), LogItem::Commit(0));
+    }
+
+    #[test]
+    fn move_workspace_commit_selection_clamps() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.move_workspace_commit_selection(-10);
+        assert_eq!(app.ws_selected_commit, 0);
+        app.move_workspace_commit_selection(100);
+        assert_eq!(app.ws_selected_commit, app.total_log_items() - 1);
+    }
+
+    // ===== Modal state transitions =====
+
+    #[test]
+    fn add_cancel_workspace() {
+        let mut app = TuiApp::default();
+        assert!(!app.is_adding_workspace());
+        app.begin_add_workspace("/tmp".into());
+        assert!(app.is_adding_workspace());
+        app.cancel_add_workspace();
+        assert!(!app.is_adding_workspace());
+    }
+
+    #[test]
+    fn delete_workspace_flow() {
+        let mut app = app_with_workspaces(2);
+        assert!(!app.is_confirming_delete());
+        app.begin_delete_workspace();
+        assert!(app.is_confirming_delete());
+        let id = app.take_delete_workspace();
+        assert!(id.is_some());
+        assert!(!app.is_confirming_delete());
+    }
+
+    #[test]
+    fn cancel_delete_workspace() {
+        let mut app = app_with_workspaces(2);
+        app.begin_delete_workspace();
+        app.cancel_delete_workspace();
+        assert!(!app.is_confirming_delete());
+    }
+
+    #[test]
+    fn rename_workspace_flow() {
+        let mut app = app_with_workspaces(1);
+        app.begin_rename_workspace_home();
+        assert!(app.is_renaming_workspace());
+        app.cancel_rename_workspace();
+        assert!(!app.is_renaming_workspace());
+    }
+
+    #[test]
+    fn settings_open_close() {
+        let mut app = TuiApp::default();
+        assert!(!app.is_settings_open());
+        app.open_settings();
+        assert!(app.is_settings_open());
+        assert_eq!(app.settings_selected, 0);
+        app.close_settings();
+        assert!(!app.is_settings_open());
+    }
+
+    #[test]
+    fn ssh_workspace_flow_no_history() {
+        let mut app = TuiApp::default();
+        app.ssh_history.clear();
+        app.begin_add_ssh_workspace();
+        assert!(app.is_adding_ssh_workspace());
+        app.cancel_ssh_workspace();
+        assert!(!app.is_adding_ssh_workspace());
+    }
+
+    #[test]
+    fn ssh_workspace_flow_with_history() {
+        let mut app = TuiApp::default();
+        app.ssh_history = vec![SshHistoryEntry { host: "h".into(), user: None, path: "/p".into() }];
+        app.begin_add_ssh_workspace();
+        assert!(app.ssh_history_picker.is_some());
+        app.select_ssh_history_entry();
+        assert!(app.is_adding_ssh_workspace());
+    }
+
+    #[test]
+    fn commit_modal() {
+        let mut app = TuiApp::default();
+        assert!(!app.is_committing());
+        app.commit_input = Some("initial".into());
+        assert!(app.is_committing());
+    }
+
+    #[test]
+    fn create_branch_modal() {
+        let mut app = TuiApp::default();
+        assert!(!app.is_creating_branch());
+        app.begin_create_branch();
+        assert!(app.is_creating_branch());
+        app.cancel_create_branch();
+        assert!(!app.is_creating_branch());
+    }
+
+    #[test]
+    fn discard_flow() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.ws_uncommitted_expanded = true;
+        app.ws_selected_commit = 1; // first changed file
+        app.begin_discard();
+        assert!(app.is_confirming_discard());
+        let file = app.take_discard_file();
+        assert!(file.is_some());
+        assert!(!app.is_confirming_discard());
+    }
+
+    #[test]
+    fn stash_modal() {
+        let mut app = TuiApp::default();
+        assert!(!app.is_stashing());
+        app.stash_input = Some("msg".into());
+        assert!(app.is_stashing());
+    }
+
+    // ===== Pure helpers =====
+
+    #[test]
+    fn mouse_selection_at() {
+        let sel = MouseSelection::at(5, 10);
+        assert_eq!(sel.anchor_col, 5);
+        assert_eq!(sel.anchor_row, 10);
+        assert!(sel.is_empty());
+    }
+
+    #[test]
+    fn mouse_selection_ordered_forward() {
+        let sel = MouseSelection { anchor_col: 0, anchor_row: 0, end_col: 5, end_row: 3 };
+        let ((sc, sr), (ec, er)) = sel.ordered();
+        assert_eq!((sc, sr), (0, 0));
+        assert_eq!((ec, er), (5, 3));
+    }
+
+    #[test]
+    fn mouse_selection_ordered_backward() {
+        let sel = MouseSelection { anchor_col: 5, anchor_row: 3, end_col: 0, end_row: 0 };
+        let ((sc, sr), (ec, er)) = sel.ordered();
+        assert_eq!((sc, sr), (0, 0));
+        assert_eq!((ec, er), (5, 3));
+    }
+
+    #[test]
+    fn mouse_selection_not_empty_when_dragged() {
+        let mut sel = MouseSelection::at(0, 0);
+        sel.end_col = 5;
+        assert!(!sel.is_empty());
+    }
+
+    #[test]
+    fn ssh_input_cycle_field() {
+        let mut input = SshWorkspaceInput::new();
+        assert_eq!(input.focused_field, SshField::Host);
+        input.cycle_field();
+        assert_eq!(input.focused_field, SshField::User);
+        input.cycle_field();
+        assert_eq!(input.focused_field, SshField::Path);
+        input.cycle_field();
+        assert_eq!(input.focused_field, SshField::Host);
+    }
+
+    #[test]
+    fn ssh_input_active_input_mut() {
+        let mut input = SshWorkspaceInput::new();
+        input.active_input_mut().push_str("host.com");
+        assert_eq!(input.host, "host.com");
+        input.cycle_field();
+        input.active_input_mut().push_str("user");
+        assert_eq!(input.user, "user");
+        input.cycle_field();
+        input.active_input_mut().push_str("/path");
+        assert_eq!(input.path, "/path");
+    }
+
+    #[test]
+    fn effective_attention_with_notifications_on() {
+        let app = TuiApp::default();
+        assert_eq!(app.effective_attention(AttentionLevel::Error), AttentionLevel::Error);
+    }
+
+    #[test]
+    fn effective_attention_with_notifications_off() {
+        let mut app = TuiApp::default();
+        app.settings.attention_notifications = false;
+        assert_eq!(app.effective_attention(AttentionLevel::Error), AttentionLevel::None);
+    }
+
+    #[test]
+    fn begin_finish_git_op() {
+        let mut app = TuiApp::default();
+        let id = Uuid::new_v4();
+        assert!(!app.is_git_op_in_progress(id));
+        app.begin_git_op(id);
+        assert!(app.is_git_op_in_progress(id));
+        // finish_git_op returns false when minimum duration not met (just started)
+        let cleared = app.finish_git_op(id);
+        assert!(!cleared); // too soon
+        assert!(app.is_git_op_in_progress(id)); // still in progress
+    }
+
+    #[test]
+    fn toggle_fullscreen() {
+        let mut app = TuiApp::default();
+        assert!(!app.terminal_fullscreen);
+        app.toggle_terminal_fullscreen();
+        assert!(app.terminal_fullscreen);
+        app.toggle_terminal_fullscreen();
+        assert!(!app.terminal_fullscreen);
+    }
+
+    #[test]
+    fn dir_browser_move_selection() {
+        let mut state = DirBrowserState {
+            path_input: String::new(),
+            entries: vec!["a".into(), "b".into(), "c".into()],
+            selected: 0,
+            show_hidden: false,
+            editing_path: false,
+        };
+        state.move_selection(1);
+        assert_eq!(state.selected, 1);
+        state.move_selection(10);
+        assert_eq!(state.selected, 2); // clamped
+        state.move_selection(-10);
+        assert_eq!(state.selected, 0); // clamped
+    }
+
+    #[test]
+    fn dir_browser_move_selection_empty() {
+        let mut state = DirBrowserState {
+            path_input: String::new(),
+            entries: vec![],
+            selected: 0,
+            show_hidden: false,
+            editing_path: false,
+        };
+        state.move_selection(1);
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn move_branch_selection_local() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.ws_branch_sub_pane = BranchSubPane::Local;
+        app.ws_selected_local_branch = 0;
+        app.move_branch_selection(1);
+        assert_eq!(app.ws_selected_local_branch, 1);
+        app.move_branch_selection(100);
+        assert_eq!(app.ws_selected_local_branch, 1); // clamped to last
+        app.move_branch_selection(-100);
+        assert_eq!(app.ws_selected_local_branch, 0); // clamped to first
+    }
+
+    #[test]
+    fn move_branch_selection_remote() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.ws_branch_sub_pane = BranchSubPane::Remote;
+        app.ws_selected_remote_branch = 0;
+        app.move_branch_selection(100);
+        assert_eq!(app.ws_selected_remote_branch, 0); // only 1 remote branch
+    }
+
+    #[test]
+    fn set_workspaces_clamps_selection() {
+        let mut app = app_with_workspaces(5);
+        app.home_selected = 4;
+        app.set_workspaces(vec![make_ws("only")]);
+        assert_eq!(app.home_selected, 0);
+    }
+
+    #[test]
+    fn set_workspaces_empty() {
+        let mut app = app_with_workspaces(3);
+        app.home_selected = 2;
+        app.set_workspaces(vec![]);
+        assert_eq!(app.home_selected, 0);
+    }
+
+    #[test]
+    fn rename_tab_flow() {
+        let mut app = TuiApp::default();
+        app.ws_active_tab = 1; // shell tab
+        app.begin_rename_tab();
+        assert!(app.is_renaming_tab());
+        app.rename_tab_input = Some("new-name".into());
+        app.apply_rename_tab();
+        assert!(!app.is_renaming_tab());
+        assert_eq!(app.ws_tabs[1].label, "new-name");
+    }
+
+    #[test]
+    fn rename_tab_agent_noop() {
+        let mut app = TuiApp::default();
+        app.ws_active_tab = 0; // agent tab
+        app.begin_rename_tab();
+        assert!(!app.is_renaming_tab()); // should not allow renaming agent
+    }
+
+    #[test]
+    fn cancel_rename_tab() {
+        let mut app = TuiApp::default();
+        app.ws_active_tab = 1;
+        app.begin_rename_tab();
+        app.cancel_rename_tab();
+        assert!(!app.is_renaming_tab());
+    }
+
+    #[test]
+    fn stash_pull_pop_flow() {
+        let mut app = TuiApp::default();
+        let id = Uuid::new_v4();
+        assert!(!app.is_confirming_stash_pull_pop());
+        app.begin_stash_pull_pop(id);
+        assert!(app.is_confirming_stash_pull_pop());
+        let taken = app.take_stash_pull_pop();
+        assert_eq!(taken, Some(id));
+        assert!(!app.is_confirming_stash_pull_pop());
+    }
+
+    #[test]
+    fn cancel_stash_pull_pop() {
+        let mut app = TuiApp::default();
+        app.begin_stash_pull_pop(Uuid::new_v4());
+        app.cancel_stash_pull_pop();
+        assert!(!app.is_confirming_stash_pull_pop());
+    }
+
+    // ===== A1: workspace_name_from_path =====
+
+    #[test]
+    fn workspace_name_from_path_normal() {
+        assert_eq!(workspace_name_from_path("/home/user/project"), "project");
+    }
+
+    #[test]
+    fn workspace_name_from_path_root() {
+        assert_eq!(workspace_name_from_path("/"), "workspace");
+    }
+
+    #[test]
+    fn workspace_name_from_path_hidden() {
+        assert_eq!(workspace_name_from_path("/home/user/.hidden"), ".hidden");
+    }
+
+    #[test]
+    fn workspace_name_from_path_empty() {
+        assert_eq!(workspace_name_from_path(""), "workspace");
+    }
+
+    // ===== A2: sanitize_workspace_tabs =====
+
+    #[test]
+    fn sanitize_workspace_tabs_empty_returns_default() {
+        let state = WorkspaceTabsState {
+            tabs: vec![],
+            active: 0,
+            next_shell_tab: 0,
+        };
+        let result = sanitize_workspace_tabs(state);
+        assert_eq!(result.tabs.len(), 2);
+        assert_eq!(result.tabs[0].kind, TerminalKind::Agent);
+        assert_eq!(result.tabs[1].kind, TerminalKind::Shell);
+        assert_eq!(result.next_shell_tab, 2);
+    }
+
+    #[test]
+    fn sanitize_workspace_tabs_missing_agent_prepends() {
+        let state = WorkspaceTabsState {
+            tabs: vec![TerminalTab::shell("s1".into(), "s1".into())],
+            active: 0,
+            next_shell_tab: 2,
+        };
+        let result = sanitize_workspace_tabs(state);
+        assert_eq!(result.tabs[0].kind, TerminalKind::Agent);
+        assert!(result.tabs.iter().any(|t| t.kind == TerminalKind::Shell));
+    }
+
+    #[test]
+    fn sanitize_workspace_tabs_missing_shell_appends() {
+        let state = WorkspaceTabsState {
+            tabs: vec![TerminalTab::agent()],
+            active: 0,
+            next_shell_tab: 2,
+        };
+        let result = sanitize_workspace_tabs(state);
+        assert_eq!(result.tabs.last().unwrap().kind, TerminalKind::Shell);
+        assert!(result.tabs.iter().any(|t| t.kind == TerminalKind::Agent));
+    }
+
+    #[test]
+    fn sanitize_workspace_tabs_active_clamped() {
+        let state = WorkspaceTabsState {
+            tabs: vec![
+                TerminalTab::agent(),
+                TerminalTab::shell("s1".into(), "s1".into()),
+            ],
+            active: 99,
+            next_shell_tab: 2,
+        };
+        let result = sanitize_workspace_tabs(state);
+        assert_eq!(result.active, 1); // clamped to last index
+    }
+
+    #[test]
+    fn sanitize_workspace_tabs_next_shell_tab_raised() {
+        let state = WorkspaceTabsState {
+            tabs: vec![
+                TerminalTab::agent(),
+                TerminalTab::shell("s1".into(), "s1".into()),
+            ],
+            active: 0,
+            next_shell_tab: 0,
+        };
+        let result = sanitize_workspace_tabs(state);
+        assert_eq!(result.next_shell_tab, 2);
+    }
+
+    // ===== A3: tag_map =====
+
+    #[test]
+    fn tag_map_no_workspace_returns_empty() {
+        let app = TuiApp::default();
+        assert!(app.tag_map().is_empty());
+    }
+
+    #[test]
+    fn tag_map_workspace_no_tags_returns_empty() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state()); // tags is empty
+        assert!(app.tag_map().is_empty());
+    }
+
+    #[test]
+    fn tag_map_workspace_with_tags_groups_by_hash() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        let mut git = make_git_state();
+        git.tags = vec![
+            protocol::TagInfo { name: "v1.0".into(), hash: "abc".into(), date: "1d".into() },
+            protocol::TagInfo { name: "v1.1".into(), hash: "abc".into(), date: "2d".into() },
+            protocol::TagInfo { name: "v2.0".into(), hash: "def".into(), date: "3d".into() },
+        ];
+        app.set_workspace_git(id, git);
+        let map = app.tag_map();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("abc").unwrap().len(), 2);
+        assert!(map.get("abc").unwrap().contains(&"v1.0".to_string()));
+        assert!(map.get("abc").unwrap().contains(&"v1.1".to_string()));
+        assert_eq!(map.get("def").unwrap(), &vec!["v2.0".to_string()]);
+    }
+
+    // ===== A4: total_log_items + log_item_at with tag filter =====
+
+    #[test]
+    fn total_log_items_tag_filter_only_tagged_commits() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        let mut git = make_git_state();
+        // Tag only first commit ("abc"), second ("def") is untagged
+        git.tags = vec![
+            protocol::TagInfo { name: "v1.0".into(), hash: "abc".into(), date: "1d".into() },
+        ];
+        app.set_workspace_git(id, git);
+        app.ws_tag_filter = true;
+        // header(1) + 1 tagged commit = 2
+        assert_eq!(app.total_log_items(), 2);
+    }
+
+    #[test]
+    fn total_log_items_tag_filter_expanded_commit_includes_files() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        let mut git = make_git_state();
+        git.tags = vec![
+            protocol::TagInfo { name: "v1.0".into(), hash: "abc".into(), date: "1d".into() },
+        ];
+        app.set_workspace_git(id, git);
+        app.ws_tag_filter = true;
+        app.ws_expanded_commit = Some(0); // expand commit index 0 ("abc")
+        app.commit_files_cache.insert("abc".into(), vec!["file1.rs".into(), "file2.rs".into()]);
+        // header(1) + 1 tagged commit + 2 expanded files = 4
+        assert_eq!(app.total_log_items(), 4);
+    }
+
+    #[test]
+    fn log_item_at_tag_filter_skips_untagged() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        let mut git = make_git_state();
+        // Tag only the second commit ("def"), first ("abc") is untagged
+        git.tags = vec![
+            protocol::TagInfo { name: "v2.0".into(), hash: "def".into(), date: "2d".into() },
+        ];
+        app.set_workspace_git(id, git);
+        app.ws_tag_filter = true;
+        // index 0 = header, index 1 = Commit(1) because Commit(0) is untagged and skipped
+        assert_eq!(app.log_item_at(0), LogItem::UncommittedHeader);
+        assert_eq!(app.log_item_at(1), LogItem::Commit(1));
+    }
+
+    // ===== A5: selected_commit_hash / selected_commit_file / selected_log_file =====
+
+    #[test]
+    fn selected_commit_hash_on_commit_item() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.ws_selected_commit = 1; // Commit(0)
+        assert_eq!(app.selected_commit_hash(), Some("abc".to_string()));
+    }
+
+    #[test]
+    fn selected_commit_hash_on_uncommitted_header() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.ws_selected_commit = 0; // UncommittedHeader
+        assert_eq!(app.selected_commit_hash(), None);
+    }
+
+    #[test]
+    fn selected_commit_file_on_commit_file_item() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.ws_expanded_commit = Some(0);
+        app.commit_files_cache.insert("abc".into(), vec!["src/main.rs".into(), "Cargo.toml".into()]);
+        // With expanded commit 0: header(0), Commit(0)(1), CommitFile(0,0)(2), CommitFile(0,1)(3), Commit(1)(4)
+        app.ws_selected_commit = 2; // CommitFile(0, 0)
+        let result = app.selected_commit_file();
+        assert_eq!(result, Some(("abc".to_string(), "src/main.rs".to_string())));
+    }
+
+    #[test]
+    fn selected_log_file_on_changed_file() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.ws_uncommitted_expanded = true;
+        app.ws_selected_commit = 1; // ChangedFile(0) = "a.rs"
+        assert_eq!(app.selected_log_file(), Some("a.rs".to_string()));
+    }
+
+    // ===== A6: take_ssh_workspace_request =====
+
+    #[test]
+    fn take_ssh_workspace_request_valid() {
+        let mut app = TuiApp::default();
+        let mut input = SshWorkspaceInput::new();
+        input.host = "myhost.com".to_string();
+        input.path = "/home/user/project".to_string();
+        input.user = "admin".to_string();
+        app.ssh_workspace_input = Some(input);
+        let result = app.take_ssh_workspace_request();
+        assert!(result.is_some());
+        let (name, path, target) = result.unwrap();
+        assert!(name.contains("myhost.com"));
+        assert_eq!(path, "/home/user/project");
+        assert_eq!(target.host, "myhost.com");
+        assert_eq!(target.user, Some("admin".to_string()));
+    }
+
+    #[test]
+    fn take_ssh_workspace_request_empty_host() {
+        let mut app = TuiApp::default();
+        let mut input = SshWorkspaceInput::new();
+        input.host = "".to_string();
+        input.path = "/some/path".to_string();
+        app.ssh_workspace_input = Some(input);
+        assert!(app.take_ssh_workspace_request().is_none());
+    }
+
+    #[test]
+    fn take_ssh_workspace_request_empty_path() {
+        let mut app = TuiApp::default();
+        let mut input = SshWorkspaceInput::new();
+        input.host = "myhost.com".to_string();
+        input.path = "".to_string();
+        app.ssh_workspace_input = Some(input);
+        assert!(app.take_ssh_workspace_request().is_none());
+    }
+
+    #[test]
+    fn take_ssh_workspace_request_whitespace_user_becomes_none() {
+        let mut app = TuiApp::default();
+        let mut input = SshWorkspaceInput::new();
+        input.host = "myhost.com".to_string();
+        input.path = "/home/user/project".to_string();
+        input.user = "   ".to_string();
+        app.ssh_workspace_input = Some(input);
+        let result = app.take_ssh_workspace_request();
+        assert!(result.is_some());
+        let (_, _, target) = result.unwrap();
+        assert_eq!(target.user, None);
+    }
+
+    // ===== A7: take_add_workspace_request =====
+
+    #[test]
+    fn take_add_workspace_request_valid() {
+        let mut app = TuiApp::default();
+        app.dir_browser = Some(DirBrowserState {
+            path_input: "/home/user/project".to_string(),
+            entries: vec![],
+            selected: 0,
+            show_hidden: false,
+            editing_path: false,
+        });
+        let result = app.take_add_workspace_request();
+        assert!(result.is_some());
+        let (name, path) = result.unwrap();
+        assert_eq!(name, "project");
+        assert_eq!(path, "/home/user/project");
+    }
+
+    #[test]
+    fn take_add_workspace_request_empty_path() {
+        let mut app = TuiApp::default();
+        app.dir_browser = Some(DirBrowserState {
+            path_input: "".to_string(),
+            entries: vec![],
+            selected: 0,
+            show_hidden: false,
+            editing_path: false,
+        });
+        assert!(app.take_add_workspace_request().is_none());
+    }
+
+    #[test]
+    fn take_add_workspace_request_no_browser() {
+        let mut app = TuiApp::default();
+        assert!(app.take_add_workspace_request().is_none());
+    }
+}

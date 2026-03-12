@@ -896,3 +896,120 @@ async fn restore_workspaces(state: &mut AppState, evt_tx: &broadcast::Sender<Eve
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_alphanumeric_passthrough() {
+        assert_eq!(sanitize_session_name("hello123"), "hello123");
+    }
+
+    #[test]
+    fn sanitize_preserves_dashes_underscores() {
+        assert_eq!(sanitize_session_name("my-session_1"), "my-session_1");
+    }
+
+    #[test]
+    fn sanitize_spaces_become_underscores() {
+        assert_eq!(sanitize_session_name("my session"), "my_session");
+    }
+
+    #[test]
+    fn sanitize_special_chars() {
+        assert_eq!(sanitize_session_name("a@b#c.d"), "a_b_c_d");
+    }
+
+    #[test]
+    fn sanitize_empty_returns_default() {
+        assert_eq!(sanitize_session_name(""), "default");
+    }
+
+    #[test]
+    fn sanitize_whitespace_only_returns_default() {
+        assert_eq!(sanitize_session_name("   "), "default");
+    }
+
+    #[test]
+    fn sanitize_trims_whitespace() {
+        assert_eq!(sanitize_session_name("  hello  "), "hello");
+    }
+
+    // ── normalize_tab_id tests ──────────────────────────────────────────
+
+    #[test]
+    fn normalize_tab_id_agent_none_returns_agent() {
+        assert_eq!(normalize_tab_id(protocol::TerminalKind::Agent, None), "agent");
+    }
+
+    #[test]
+    fn normalize_tab_id_agent_some_custom_returns_agent() {
+        assert_eq!(
+            normalize_tab_id(protocol::TerminalKind::Agent, Some("custom".to_string())),
+            "agent"
+        );
+    }
+
+    #[test]
+    fn normalize_tab_id_shell_some_returns_value() {
+        assert_eq!(
+            normalize_tab_id(protocol::TerminalKind::Shell, Some("my-tab".to_string())),
+            "my-tab"
+        );
+    }
+
+    #[test]
+    fn normalize_tab_id_shell_none_returns_default() {
+        assert_eq!(normalize_tab_id(protocol::TerminalKind::Shell, None), "shell");
+    }
+
+    #[test]
+    fn normalize_tab_id_shell_whitespace_only_returns_default() {
+        assert_eq!(
+            normalize_tab_id(protocol::TerminalKind::Shell, Some("  ".to_string())),
+            "shell"
+        );
+    }
+
+    #[test]
+    fn normalize_tab_id_shell_empty_returns_default() {
+        assert_eq!(
+            normalize_tab_id(protocol::TerminalKind::Shell, Some("".to_string())),
+            "shell"
+        );
+    }
+
+    // ── default_terminal_cmd tests ──────────────────────────────────────
+
+    #[test]
+    fn default_terminal_cmd_agent_returns_two_elements() {
+        let cmd = default_terminal_cmd(protocol::TerminalKind::Agent);
+        assert_eq!(cmd.len(), 2);
+    }
+
+    #[test]
+    fn default_terminal_cmd_shell_returns_two_elements() {
+        let cmd = default_terminal_cmd(protocol::TerminalKind::Shell);
+        assert_eq!(cmd.len(), 2);
+    }
+
+    #[test]
+    fn default_terminal_cmd_agent_second_element_is_interactive_flag() {
+        let cmd = default_terminal_cmd(protocol::TerminalKind::Agent);
+        assert_eq!(cmd[1], "-i");
+    }
+
+    #[test]
+    fn default_terminal_cmd_shell_second_element_is_interactive_flag() {
+        let cmd = default_terminal_cmd(protocol::TerminalKind::Shell);
+        assert_eq!(cmd[1], "-i");
+    }
+
+    #[test]
+    fn default_terminal_cmd_agent_and_shell_return_same_command() {
+        let agent_cmd = default_terminal_cmd(protocol::TerminalKind::Agent);
+        let shell_cmd = default_terminal_cmd(protocol::TerminalKind::Shell);
+        assert_eq!(agent_cmd, shell_cmd);
+    }
+}
