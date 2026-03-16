@@ -1,5 +1,7 @@
 # Anvl
 
+<video src="https://github.com/user-attachments/assets/fbc7da6f-0f79-4cad-ab20-b997c3dd119f" controls width="600"></video>
+
 A terminal-based multi-workspace manager built with Rust.
 
 ## Features
