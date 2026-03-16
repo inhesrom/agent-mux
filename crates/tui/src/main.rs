@@ -64,6 +64,11 @@ struct SessionRegistry {
     sessions: Vec<SessionEntry>,
 }
 
+#[derive(Debug, Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+}
+
 fn print_help() {
     println!(
         "\
@@ -269,21 +274,7 @@ fn self_update() -> Result<()> {
     }
     let api_body = String::from_utf8_lossy(&api_output.stdout);
 
-    // Parse tag_name from JSON (avoid adding a serde_json dep for this one field)
-    let tag = api_body
-        .lines()
-        .find(|l| l.contains("\"tag_name\""))
-        .and_then(|l| {
-            let start = l.find('"')? + 1; // skip to first quote
-            let rest = &l[start..];
-            let start2 = rest.find('"')? + 1;
-            let rest2 = &rest[start2..];
-            let start3 = rest2.find('"')? + 1;
-            let rest3 = &rest2[start3..];
-            let end = rest3.find('"')?;
-            Some(rest3[..end].to_string())
-        })
-        .ok_or_else(|| anyhow!("could not parse tag_name from GitHub API response"))?;
+    let tag = parse_latest_release_tag(&api_body)?;
 
     let latest_version = tag.strip_prefix('v').unwrap_or(&tag);
 
@@ -305,11 +296,7 @@ fn self_update() -> Result<()> {
         .trim()
         .to_string();
 
-    let target = match (os_name.as_str(), arch_name.as_str()) {
-        ("darwin", "arm64" | "aarch64") => "aarch64-apple-darwin",
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        _ => return Err(anyhow!("unsupported platform: {os_name} {arch_name}")),
-    };
+    let target = detect_release_target(&os_name, &arch_name)?;
 
     let url =
         format!("https://github.com/inhesrom/anvl/releases/download/{tag}/anvl-{target}.tar.gz");
@@ -348,6 +335,17 @@ fn self_update() -> Result<()> {
     if !new_binary.exists() {
         return Err(anyhow!("extracted archive does not contain 'anvl' binary"));
     }
+    let downloaded_version = read_anvl_version(&new_binary).with_context(|| {
+        format!(
+            "downloaded release asset at {} is not a valid anvl binary",
+            new_binary.display()
+        )
+    })?;
+    if downloaded_version != latest_version {
+        return Err(anyhow!(
+            "downloaded release asset reports v{downloaded_version}, expected v{latest_version}. The GitHub release may contain a stale binary."
+        ));
+    }
 
     // Remove the running binary first — Linux allows unlinking an in-use
     // executable but blocks writing to it (ETXTBSY / "Text file busy").
@@ -366,8 +364,112 @@ fn self_update() -> Result<()> {
         std::fs::set_permissions(&current_exe, std::fs::Permissions::from_mode(0o755))?;
     }
 
-    println!("anvl updated to v{latest_version}");
+    let installed_version = read_anvl_version(&current_exe).with_context(|| {
+        format!(
+            "installed binary at {} could not be verified after update",
+            current_exe.display()
+        )
+    })?;
+    if installed_version != latest_version {
+        return Err(anyhow!(
+            "updated binary at {} still reports v{}, expected v{}",
+            current_exe.display(),
+            installed_version,
+            latest_version
+        ));
+    }
+
+    if let Some(path_binary) = find_binary_on_path("anvl") {
+        if !same_executable(&path_binary, &current_exe) {
+            let path_version = read_anvl_version(&path_binary).with_context(|| {
+                format!(
+                    "`anvl` on PATH resolves to {}, which is different from the updated binary at {}",
+                    path_binary.display(),
+                    current_exe.display()
+                )
+            })?;
+            if path_version != latest_version {
+                return Err(anyhow!(
+                    "updated {} to v{}, but `anvl` on PATH resolves to {} and reports v{}. Adjust PATH or update that install.",
+                    current_exe.display(),
+                    latest_version,
+                    path_binary.display(),
+                    path_version
+                ));
+            }
+        }
+    }
+
+    println!(
+        "anvl updated to v{latest_version} at {}",
+        current_exe.display()
+    );
     Ok(())
+}
+
+fn parse_latest_release_tag(api_body: &str) -> Result<String> {
+    let release: GitHubRelease =
+        serde_json::from_str(api_body).context("failed to parse GitHub release response")?;
+    let tag = release.tag_name.trim();
+    if tag.is_empty() {
+        return Err(anyhow!("GitHub release response did not include tag_name"));
+    }
+    Ok(tag.to_string())
+}
+
+fn detect_release_target(os_name: &str, arch_name: &str) -> Result<&'static str> {
+    match (os_name, arch_name) {
+        ("darwin", "arm64" | "aarch64") => Ok("aarch64-apple-darwin"),
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu"),
+        _ => Err(anyhow!("unsupported platform: {os_name} {arch_name}")),
+    }
+}
+
+fn parse_anvl_version_output(output: &str) -> Option<&str> {
+    let line = output.lines().find(|line| !line.trim().is_empty())?.trim();
+    let version = line.strip_prefix("anvl ")?;
+    Some(version.strip_prefix('v').unwrap_or(version))
+}
+
+fn read_anvl_version(path: &Path) -> Result<String> {
+    let output = OsCommand::new(path)
+        .arg("--version")
+        .output()
+        .with_context(|| format!("failed to run {} --version", path.display()))?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "{} --version exited with {}",
+            path.display(),
+            output.status
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_anvl_version_output(&stdout)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            anyhow!(
+                "unexpected version output from {}: {}",
+                path.display(),
+                stdout.trim()
+            )
+        })
+}
+
+fn find_binary_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+fn same_executable(lhs: &Path, rhs: &Path) -> bool {
+    if lhs == rhs {
+        return true;
+    }
+    match (lhs.canonicalize(), rhs.canonicalize()) {
+        (Ok(lhs), Ok(rhs)) => lhs == rhs,
+        _ => false,
+    }
 }
 
 struct TempDirGuard(PathBuf);
@@ -2760,6 +2862,49 @@ mod tests {
             key_to_terminal_bytes(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)),
             Some(b"\x1b[6~".to_vec()),
         );
+    }
+
+    #[test]
+    fn parses_latest_release_tag_from_json() {
+        let body = r#"{"tag_name":"v0.3.21"}"#;
+        assert_eq!(parse_latest_release_tag(body).unwrap(), "v0.3.21");
+    }
+
+    #[test]
+    fn rejects_release_json_without_tag_name() {
+        let body = r#"{"name":"v0.3.21"}"#;
+        assert!(parse_latest_release_tag(body).is_err());
+    }
+
+    #[test]
+    fn parses_version_output() {
+        assert_eq!(parse_anvl_version_output("anvl 0.3.21\n"), Some("0.3.21"));
+        assert_eq!(
+            parse_anvl_version_output("\nanvl v0.3.21\n"),
+            Some("0.3.21")
+        );
+    }
+
+    #[test]
+    fn rejects_unexpected_version_output() {
+        assert_eq!(parse_anvl_version_output("0.3.21\n"), None);
+    }
+
+    #[test]
+    fn detects_supported_release_targets() {
+        assert_eq!(
+            detect_release_target("darwin", "arm64").unwrap(),
+            "aarch64-apple-darwin"
+        );
+        assert_eq!(
+            detect_release_target("linux", "x86_64").unwrap(),
+            "x86_64-unknown-linux-gnu"
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_release_targets() {
+        assert!(detect_release_target("darwin", "x86_64").is_err());
     }
 }
 

@@ -26,6 +26,9 @@ jobs:
       - name: Build
         run: cargo build --release -p tui
 
+      - name: Verify binary version
+        run: test "$(target/release/anvl --version | awk '{print $2}')" = "${GITHUB_REF_NAME#v}"
+
       - name: Package
         run: tar czf anvl-${{ matrix.target }}.tar.gz -C target/release anvl
 
