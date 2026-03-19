@@ -13,7 +13,6 @@ use protocol::{AttentionLevel, Route};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceHit {
-    Header,
     TerminalTab(usize),
     TerminalPane,
     LogList(usize),
@@ -23,8 +22,6 @@ pub enum WorkspaceHit {
 
 #[derive(Debug, Clone, Copy)]
 struct WorkspaceLayout {
-    header: Rect,
-    terminal_tabs: Rect,
     terminal_pane: Rect,
     git_log: Rect,
     git_branches: Rect,
@@ -33,29 +30,20 @@ struct WorkspaceLayout {
 }
 
 fn layout(area: Rect, focus: crate::app::Focus, terminal_fullscreen: bool) -> WorkspaceLayout {
+    // Top-level: body + footer
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(2),
-        ])
+        .constraints([Constraint::Min(3), Constraint::Length(2)])
         .split(area);
 
     if terminal_fullscreen {
-        let terminal_area = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(5), Constraint::Min(3)])
-            .split(chunks[1]);
         let zero = Rect::new(0, 0, 0, 0);
         return WorkspaceLayout {
-            header: chunks[0],
-            terminal_tabs: terminal_area[0],
-            terminal_pane: terminal_area[1],
+            terminal_pane: chunks[0],
             git_log: zero,
             git_branches: zero,
             git_diff: zero,
-            footer: chunks[2],
+            footer: chunks[1],
         };
     }
 
@@ -70,11 +58,7 @@ fn layout(area: Rect, focus: crate::app::Focus, terminal_fullscreen: bool) -> Wo
             | crate::app::Focus::WsDiff => [Constraint::Percentage(35), Constraint::Percentage(65)],
             _ => [Constraint::Percentage(55), Constraint::Percentage(45)],
         })
-        .split(chunks[1]);
-    let terminal_area = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(5), Constraint::Min(3)])
-        .split(body[0]);
+        .split(chunks[0]);
     let git_area = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
@@ -87,13 +71,11 @@ fn layout(area: Rect, focus: crate::app::Focus, terminal_fullscreen: bool) -> Wo
         .split(git_area[0]);
 
     WorkspaceLayout {
-        header: chunks[0],
-        terminal_tabs: terminal_area[0],
-        terminal_pane: terminal_area[1],
+        terminal_pane: body[0],
         git_log: left_split[0],
         git_branches: left_split[1],
         git_diff: git_area[1],
-        footer: chunks[2],
+        footer: chunks[1],
     }
 }
 
@@ -140,6 +122,7 @@ pub fn pane_border_style(
 }
 
 /// Builds the title `Line` for the terminal pane, with an optional attention badge.
+#[cfg(test)]
 pub fn build_terminal_title_line(
     attention: AttentionLevel,
     flash_on: bool,
@@ -179,6 +162,68 @@ pub fn build_terminal_title_line(
         spans.push(badge);
     }
     Line::from(spans)
+}
+
+/// Builds the workspace info string used on the border line and for hit-testing.
+fn ws_info_string(app: &TuiApp) -> String {
+    let ws_id = match app.route {
+        Route::Workspace { id } => Some(id),
+        _ => None,
+    };
+    ws_id
+        .and_then(|id| app.workspaces.iter().find(|w| w.id == id))
+        .map(|w| {
+            let git = ws_id.and_then(|id| app.workspace_git.get(&id));
+            let branch = git.and_then(|g| g.branch.as_deref()).unwrap_or("-");
+            let ab = match (git.and_then(|g| g.ahead), git.and_then(|g| g.behind)) {
+                (Some(a), Some(b)) if a == 0 && b == 0 => " =".to_string(),
+                (Some(a), Some(b)) => {
+                    let mut s = String::new();
+                    if a > 0 {
+                        s.push_str(&format!(" ↑{a}"));
+                    }
+                    if b > 0 {
+                        s.push_str(&format!(" ↓{b}"));
+                    }
+                    s
+                }
+                _ => String::new(),
+            };
+            if let Some(rename) = &app.rename_workspace_input {
+                format!("Rename: {rename}")
+            } else {
+                format!("{} · {}  ◈{}{}", w.name, branch, w.dirty_files, ab)
+            }
+        })
+        .unwrap_or_else(|| "Workspace".to_string())
+}
+
+const MAX_TAB_WIDTH: u16 = 24;
+
+/// Computes the x-range for each tab on the terminal pane's top border.
+/// Tabs are sized to fit their label, capped at `MAX_TAB_WIDTH`.
+/// Returns a vec of `(start_x, end_x)` for each tab.
+fn compute_tab_ranges(
+    pane: &Rect,
+    ws_info_width: u16,
+    tab_label_widths: &[u16],
+) -> Vec<(u16, u16)> {
+    let inner_left = pane.x + 1;
+    let inner_right = pane.right().saturating_sub(1);
+    let tab_area_start = inner_left + ws_info_width + 2; // +2 for spacing after ws info
+
+    let mut ranges = Vec::new();
+    let mut x = tab_area_start;
+    for &label_w in tab_label_widths {
+        let width = (label_w + 2).min(MAX_TAB_WIDTH); // +2 for notch corner chars
+        let end = (x + width).min(inner_right);
+        if x >= inner_right {
+            break;
+        }
+        ranges.push((x, end));
+        x = end;
+    }
+    ranges
 }
 
 fn status_marker(c: char) -> char {
@@ -233,47 +278,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
             .unwrap_or(AttentionLevel::None),
     );
 
-    let title = ws_id
-        .and_then(|id| app.workspaces.iter().find(|w| w.id == id))
-        .map(|w| {
-            let git = ws_id.and_then(|id| app.workspace_git.get(&id));
-            let branch = git.and_then(|g| g.branch.as_deref()).unwrap_or("-");
-            let ab = match (git.and_then(|g| g.ahead), git.and_then(|g| g.behind)) {
-                (Some(a), Some(b)) if a == 0 && b == 0 => " =".to_string(),
-                (Some(a), Some(b)) => {
-                    let mut s = String::new();
-                    if a > 0 {
-                        s.push_str(&format!(" ↑{a}"));
-                    }
-                    if b > 0 {
-                        s.push_str(&format!(" ↓{b}"));
-                    }
-                    s
-                }
-                _ => String::new(),
-            };
-            format!(
-                "Workspace: {} ({})  {}  ◈{}{}",
-                w.name, w.path, branch, w.dirty_files, ab
-            )
-        })
-        .unwrap_or_else(|| "Workspace".to_string());
-
-    let (header_style, header_border_type) = standard_border_style(false);
-    frame.render_widget(
-        Paragraph::new(if let Some(name) = &app.rename_workspace_input {
-            format!("{title}\nRename: {name}")
-        } else {
-            title
-        })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(header_style)
-                .border_type(header_border_type),
-        ),
-        l.header,
-    );
+    // Build workspace info string for the border line
+    let ws_info = ws_info_string(app);
 
     if !app.terminal_fullscreen() {
         // --- Git Log (merged uncommitted + commits + tags) ---
@@ -613,35 +619,37 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         );
     } // end if !terminal_fullscreen
 
-    // --- Terminal Tabs ---
-    let ws_summary = ws_id.and_then(|id| app.workspaces.iter().find(|w| w.id == id));
-    let (agent_running, shell_running) = ws_summary
-        .map(|w| (w.agent_running, w.shell_running))
-        .unwrap_or((false, false));
-    let (tabs_border_style, tabs_border_type) =
-        standard_border_style(app.focus == crate::app::Focus::WsTerminalTabs);
-    let tabs_block = Block::default()
-        .title("Tabs")
-        .borders(Borders::ALL)
-        .border_style(tabs_border_style)
-        .border_type(tabs_border_type);
-    let tabs_inner = tabs_block.inner(l.terminal_tabs);
-    frame.render_widget(tabs_block, l.terminal_tabs);
+    // --- Terminal Pane (with browser-style tab notch) ---
+    let terminal_focused = app.focus == crate::app::Focus::WsTerminal;
+    let tabs_focused = app.focus == crate::app::Focus::WsTerminalTabs;
+    let terminal_lines = ws_id
+        .map(|id| app.terminal_lines(id, &app.active_tab_id()))
+        .unwrap_or_else(|| vec![Line::from("No terminal output yet.")]);
+    let (term_style, term_border_type) =
+        pane_border_style(terminal_focused || tabs_focused, attention, app.spinner_tick % 2 == 0);
 
-    let tab_rects = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(
-            app.ws_tabs
-                .iter()
-                .map(|_| Constraint::Ratio(1, app.ws_tabs.len().max(1) as u32))
-                .collect::<Vec<_>>(),
-        )
-        .split(tabs_inner);
+    // Render terminal pane with Borders::ALL — we'll overwrite the top border row
+    frame.render_widget(Clear, l.terminal_pane);
+    frame.render_widget(
+        Paragraph::new(terminal_lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(term_style)
+                .border_type(term_border_type),
+        ),
+        l.terminal_pane,
+    );
+
+    // --- Inline tab rendering on the terminal pane's top border ---
+
+    let flash_on = app.spinner_tick % 2 == 0;
+    let pane = l.terminal_pane;
+    let border_y = pane.y;
+    let buf = frame.buffer_mut();
+
+    // Build tab labels
+    let mut tab_labels: Vec<String> = Vec::new();
     for (i, tab) in app.ws_tabs.iter().enumerate() {
-        let running = match tab.kind {
-            protocol::TerminalKind::Agent => agent_running,
-            protocol::TerminalKind::Shell => shell_running,
-        };
         let label = if i == app.ws_active_tab {
             app.rename_tab_input
                 .as_ref()
@@ -650,70 +658,125 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         } else {
             tab.label.clone()
         };
-        let is_active = i == app.ws_active_tab;
-        let is_agent = matches!(tab.kind, protocol::TerminalKind::Agent);
-        let (border_style, border_type) = if is_active
-            && is_agent
-            && matches!(
-                attention,
-                AttentionLevel::NeedsInput | AttentionLevel::Error
-            )
-            && app.spinner_tick % 2 == 0
-        {
-            let color = match attention {
-                AttentionLevel::Error => Color::Red,
-                _ => ORANGE,
-            };
-            (
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-                BorderType::Thick,
-            )
-        } else if is_active {
-            (
-                Style::default()
-                    .fg(Color::Blue)
-                    .add_modifier(Modifier::BOLD),
-                BorderType::Thick,
-            )
-        } else {
-            (
-                Style::default().add_modifier(Modifier::DIM),
-                BorderType::Plain,
-            )
-        };
-        let status = if running { "run" } else { "stop" };
-        let content = Line::from(format!("{label} {status}"));
-        let tab_block = Block::default()
-            .title(format!("{}", i + 1))
-            .borders(Borders::ALL)
-            .border_style(border_style)
-            .border_type(border_type);
-        frame.render_widget(Paragraph::new(content).block(tab_block), tab_rects[i]);
+        tab_labels.push(label);
     }
 
-    // --- Terminal Pane ---
-    let terminal_focused = app.focus == crate::app::Focus::WsTerminal;
-    let terminal_lines = ws_id
-        .map(|id| app.terminal_lines(id, &app.active_tab_id()))
-        .unwrap_or_else(|| vec![Line::from("No terminal output yet.")]);
-    let (term_style, term_border_type) =
-        pane_border_style(terminal_focused, attention, app.spinner_tick % 2 == 0);
-    let term_title = build_terminal_title_line(
-        attention,
-        app.spinner_tick % 2 == 0,
-        app.active_tab_passthrough(),
-    );
-    frame.render_widget(Clear, l.terminal_pane);
-    frame.render_widget(
-        Paragraph::new(terminal_lines).block(
-            Block::default()
-                .title(term_title)
-                .borders(Borders::ALL)
-                .border_style(term_style)
-                .border_type(term_border_type),
-        ),
-        l.terminal_pane,
-    );
+    // Determine usable width: inside the left/right borders of terminal pane
+    let inner_left = pane.x + 1;
+    let inner_right = pane.right().saturating_sub(1);
+    let inner_width = inner_right.saturating_sub(inner_left);
+
+    // Workspace info goes on the left of the border line
+    let ws_info_display: String = if ws_info.len() as u16 > inner_width / 2 {
+        ws_info.chars().take((inner_width / 2) as usize).collect()
+    } else {
+        ws_info.clone()
+    };
+    let ws_info_width = ws_info_display.len() as u16;
+
+    // Compute tab label widths and positions
+    let tab_label_widths: Vec<u16> = tab_labels
+        .iter()
+        .enumerate()
+        .map(|(i, lbl)| format!(" {}: {} ", i + 1, lbl).len() as u16)
+        .collect();
+    let tab_ranges = compute_tab_ranges(&pane, ws_info_width, &tab_label_widths);
+
+    let active = app.ws_active_tab;
+
+    // Write workspace info on the left portion of the border line
+    let ws_info_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    for (i, ch) in ws_info_display.chars().enumerate() {
+        let x = inner_left + 1 + i as u16; // +1 for a space after the border
+        if x < inner_right && x < buf.area().width && border_y < buf.area().height {
+            buf[(x, border_y)].set_char(ch).set_style(ws_info_style);
+        }
+    }
+
+    // Draw tabs inline on the border line: active = [ label ], inactive = dimmed label
+    for (i, _tab) in app.ws_tabs.iter().enumerate() {
+        if i >= tab_ranges.len() {
+            break;
+        }
+        let (tab_start, tab_end) = tab_ranges[i];
+
+        if i == active {
+            // Active tab: [ N: label ]
+            let is_agent = matches!(
+                app.ws_tabs.get(active).map(|t| &t.kind),
+                Some(protocol::TerminalKind::Agent)
+            );
+            let active_style = if is_agent
+                && matches!(
+                    attention,
+                    AttentionLevel::NeedsInput | AttentionLevel::Error
+                )
+                && flash_on
+            {
+                let color = match attention {
+                    AttentionLevel::Error => Color::Red,
+                    _ => ORANGE,
+                };
+                Style::default().fg(color).add_modifier(Modifier::BOLD)
+            } else if tabs_focused {
+                Style::default()
+                    .fg(Color::LightBlue)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD)
+            };
+
+            // Draw [ on the left
+            if tab_start < buf.area().width && border_y < buf.area().height {
+                buf[(tab_start, border_y)]
+                    .set_char('[')
+                    .set_style(active_style);
+            }
+            // Draw ] on the right
+            let bracket_right = tab_end.saturating_sub(1);
+            if bracket_right < buf.area().width && border_y < buf.area().height {
+                buf[(bracket_right, border_y)]
+                    .set_char(']')
+                    .set_style(active_style);
+            }
+            // Draw label between brackets
+            let label_text = format!(" {}: {} ", i + 1, tab_labels[i]);
+            let avail = bracket_right.saturating_sub(tab_start + 1) as usize;
+            let display: String = if label_text.len() > avail {
+                label_text.chars().take(avail).collect()
+            } else {
+                label_text
+            };
+            for (ci, ch) in display.chars().enumerate() {
+                let x = tab_start + 1 + ci as u16;
+                if x < bracket_right && x < buf.area().width && border_y < buf.area().height {
+                    buf[(x, border_y)].set_char(ch).set_style(active_style);
+                }
+            }
+        } else {
+            // Inactive tab: dimmed label on the border line
+            let label = format!(" {}: {} ", i + 1, tab_labels[i]);
+            let avail = (tab_end.saturating_sub(tab_start)) as usize;
+            let display: String = if label.len() > avail {
+                label.chars().take(avail).collect()
+            } else {
+                label
+            };
+            let inactive_style = Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM);
+            for (ci, ch) in display.chars().enumerate() {
+                let x = tab_start + ci as u16;
+                if x < tab_end && x < buf.area().width && border_y < buf.area().height {
+                    buf[(x, border_y)].set_char(ch).set_style(inactive_style);
+                }
+            }
+        }
+    }
 
     // --- Footer ---
     footer::render(frame, l.footer, app);
@@ -886,16 +949,47 @@ pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit
     let l = layout(area, app.focus, app.terminal_fullscreen());
 
     let point_inside = |r: Rect| x >= r.x && y >= r.y && x < r.right() && y < r.bottom();
-    if point_inside(l.header) {
-        return Some(WorkspaceHit::Header);
-    }
-    if point_inside(l.terminal_tabs) {
-        if app.ws_tabs.is_empty() {
-            return Some(WorkspaceHit::TerminalTab(0));
+
+    // Check if click is on the terminal pane's top border (tab area)
+    let border_y = l.terminal_pane.y;
+    if y == border_y && x >= l.terminal_pane.x && x < l.terminal_pane.right() {
+        // Compute tab ranges (same logic as render)
+        if !app.ws_tabs.is_empty() {
+            let pane = l.terminal_pane;
+            let inner_left = pane.x + 1;
+            let inner_right = pane.right().saturating_sub(1);
+            let inner_width = inner_right.saturating_sub(inner_left);
+            let ws_info_width = {
+                let info = ws_info_string(app);
+                let max_w = inner_width / 2;
+                (info.len() as u16).min(max_w)
+            };
+            let tab_label_widths: Vec<u16> = app
+                .ws_tabs
+                .iter()
+                .enumerate()
+                .map(|(i, tab)| {
+                    let label = if i == app.ws_active_tab {
+                        app.rename_tab_input
+                            .as_ref()
+                            .cloned()
+                            .unwrap_or_else(|| tab.label.clone())
+                    } else {
+                        tab.label.clone()
+                    };
+                    format!(" {}: {} ", i + 1, label).len() as u16
+                })
+                .collect();
+            let ranges = compute_tab_ranges(&pane, ws_info_width, &tab_label_widths);
+
+            for (i, &(start, end)) in ranges.iter().enumerate() {
+                if x >= start && x < end {
+                    return Some(WorkspaceHit::TerminalTab(i));
+                }
+            }
         }
-        let tab_w = (l.terminal_tabs.width / app.ws_tabs.len() as u16).max(1);
-        let idx = ((x.saturating_sub(l.terminal_tabs.x)) / tab_w) as usize;
-        return Some(WorkspaceHit::TerminalTab(idx.min(app.ws_tabs.len() - 1)));
+        // Click on border but not on a tab — treat as terminal pane
+        return Some(WorkspaceHit::TerminalPane);
     }
     if point_inside(l.terminal_pane) {
         return Some(WorkspaceHit::TerminalPane);
@@ -945,12 +1039,6 @@ pub fn pane_rect_at(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<Rect> {
     if point_inside(l.git_branches) {
         return Some(l.git_branches);
     }
-    if point_inside(l.terminal_tabs) {
-        return Some(l.terminal_tabs);
-    }
-    if point_inside(l.header) {
-        return Some(l.header);
-    }
     None
 }
 
@@ -974,7 +1062,7 @@ pub fn terminal_content_rect(
 /// preventing box-drawing characters from leaking into clipboard text.
 pub fn border_rects(area: Rect, app: &TuiApp) -> Vec<Rect> {
     let l = layout(area, app.focus, app.terminal_fullscreen());
-    let mut rects = vec![l.header, l.terminal_tabs, l.terminal_pane, l.footer];
+    let mut rects = vec![l.terminal_pane, l.footer];
 
     if !app.terminal_fullscreen() {
         rects.push(l.git_log);
@@ -987,26 +1075,6 @@ pub fn border_rects(area: Rect, app: &TuiApp) -> Vec<Rect> {
             .split(l.git_branches);
         rects.push(branch_split[0]);
         rects.push(branch_split[1]);
-    }
-
-    // Individual tab rects inside terminal_tabs
-    let tabs_block = Block::default()
-        .title("Tabs")
-        .borders(Borders::ALL);
-    let tabs_inner = tabs_block.inner(l.terminal_tabs);
-    if !app.ws_tabs.is_empty() {
-        let tab_rects = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(
-                app.ws_tabs
-                    .iter()
-                    .map(|_| Constraint::Ratio(1, app.ws_tabs.len().max(1) as u32))
-                    .collect::<Vec<_>>(),
-            )
-            .split(tabs_inner);
-        for r in tab_rects.iter() {
-            rects.push(*r);
-        }
     }
 
     rects.retain(|r| r.width > 0 && r.height > 0);
@@ -1138,24 +1206,42 @@ mod tests {
         (app, id)
     }
 
+    /// Helper to get the first tab's x-range for hit testing.
+    fn first_tab_x(app: &TuiApp, area: Rect) -> u16 {
+        let l = layout(area, app.focus, app.terminal_fullscreen());
+        let pane = l.terminal_pane;
+        let inner_left = pane.x + 1;
+        let inner_right = pane.right().saturating_sub(1);
+        let inner_width = inner_right.saturating_sub(inner_left);
+        let info = ws_info_string(app);
+        let ws_info_width = (info.len() as u16).min(inner_width / 2);
+        let label_widths: Vec<u16> = app
+            .ws_tabs
+            .iter()
+            .enumerate()
+            .map(|(i, tab)| format!(" {}: {} ", i + 1, tab.label).len() as u16)
+            .collect();
+        let ranges = compute_tab_ranges(&pane, ws_info_width, &label_widths);
+        ranges.first().map(|r| r.0 + 1).unwrap_or(inner_left)
+    }
+
     #[test]
-    fn hit_test_header() {
+    fn hit_test_border_line_returns_tab() {
         let (app, _) = app_with_workspace();
         let area = Rect::new(0, 0, 120, 40);
-        // Header is the first 3 rows (Constraint::Length(3))
-        let result = hit_test(area, &app, 10, 1);
-        assert_eq!(result, Some(WorkspaceHit::Header));
+        let l = layout(area, app.focus, app.terminal_fullscreen());
+        let tab_x = first_tab_x(&app, area);
+        let result = hit_test(area, &app, tab_x, l.terminal_pane.y);
+        assert!(matches!(result, Some(WorkspaceHit::TerminalTab(_))));
     }
 
     #[test]
     fn hit_test_terminal_pane() {
         let (app, _) = app_with_workspace();
         let area = Rect::new(0, 0, 120, 40);
-        // Terminal pane is below tabs, in the upper body area.
-        // Layout: header(3) + body split. Terminal tabs are Length(5), terminal pane is Min(3).
-        // With WsTerminal focus the terminal gets 72% of body.
-        // Body = rows 3..38. 72% of 35 = ~25. Tabs = 5 rows (rows 3..8), terminal = rest (rows 8..28).
-        let result = hit_test(area, &app, 10, 15);
+        let l = layout(area, app.focus, app.terminal_fullscreen());
+        // Click inside the terminal pane content area (below the top border)
+        let result = hit_test(area, &app, 10, l.terminal_pane.y + 2);
         assert_eq!(result, Some(WorkspaceHit::TerminalPane));
     }
 
@@ -1195,11 +1281,12 @@ mod tests {
     }
 
     #[test]
-    fn hit_test_terminal_tabs() {
+    fn hit_test_terminal_tabs_on_border() {
         let (app, _) = app_with_workspace();
         let area = Rect::new(0, 0, 120, 40);
         let l = layout(area, app.focus, app.terminal_fullscreen());
-        let result = hit_test(area, &app, l.terminal_tabs.x + 1, l.terminal_tabs.y + 1);
+        let tab_x = first_tab_x(&app, area);
+        let result = hit_test(area, &app, tab_x, l.terminal_pane.y);
         assert!(matches!(result, Some(WorkspaceHit::TerminalTab(_))));
     }
 
@@ -1392,9 +1479,9 @@ mod tests {
         let (app, _) = app_with_workspace();
         let area = Rect::new(0, 0, 120, 40);
         let rects = border_rects(area, &app);
-        // Should have: header, terminal_tabs, terminal_pane, footer,
-        // git_log, git_diff, 2 branch sub-panes = 8 minimum
-        assert!(rects.len() >= 8, "got {} rects", rects.len());
+        // Should have: terminal_pane, footer,
+        // git_log, git_diff, 2 branch sub-panes = 6 minimum
+        assert!(rects.len() >= 6, "got {} rects", rects.len());
         for r in &rects {
             assert!(r.width > 0 && r.height > 0, "zero-sized rect: {:?}", r);
         }
@@ -1415,6 +1502,154 @@ mod tests {
             "fullscreen {} should have fewer rects than normal {}",
             rects_fs.len(),
             rects_normal.len()
+        );
+    }
+
+    // --- New browser-tab layout tests ---
+
+    #[test]
+    fn layout_terminal_pane_starts_at_top() {
+        let area = Rect::new(0, 0, 120, 40);
+        let l = layout(area, Focus::WsTerminal, false);
+        // Terminal pane starts at the top of the body area (row 0)
+        assert_eq!(l.terminal_pane.y, 0);
+    }
+
+    #[test]
+    fn layout_fullscreen_terminal_fills_body() {
+        let area = Rect::new(0, 0, 120, 40);
+        let l = layout(area, Focus::WsTerminal, true);
+        // In fullscreen, terminal pane gets all rows except footer (2)
+        assert_eq!(l.terminal_pane.height, 38);
+    }
+
+    #[test]
+    fn layout_terminal_pane_reclaimed_space() {
+        // The new layout gives all vertical space to the terminal pane
+        let area = Rect::new(0, 0, 120, 40);
+        let l = layout(area, Focus::WsTerminal, false);
+        // Terminal pane should have at least 10 rows at 120x40
+        assert!(
+            l.terminal_pane.height >= 10,
+            "terminal pane should have reclaimed space, got {} rows",
+            l.terminal_pane.height
+        );
+    }
+
+    #[test]
+    fn border_rects_includes_terminal_pane() {
+        let (app, _) = app_with_workspace();
+        let area = Rect::new(0, 0, 120, 40);
+        let rects = border_rects(area, &app);
+        let l = layout(area, app.focus, app.terminal_fullscreen());
+        assert!(
+            rects.contains(&l.terminal_pane),
+            "border_rects should include the terminal pane"
+        );
+    }
+
+    #[test]
+    fn render_with_attention_flash_smoke() {
+        let (mut app, id) = app_with_workspace();
+        // Set agent attention to NeedsInput
+        if let Some(ws) = app.workspaces.iter_mut().find(|w| w.id == id) {
+            ws.attention = AttentionLevel::NeedsInput;
+        }
+        app.spinner_tick = 0; // flash on
+        smoke_render_workspace(&app, 120, 40);
+        app.spinner_tick = 1; // flash off
+        smoke_render_workspace(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_with_rename_tab_smoke() {
+        let (mut app, _) = app_with_workspace();
+        app.rename_tab_input = Some("my-agent".into());
+        smoke_render_workspace(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_with_rename_workspace_smoke() {
+        let (mut app, _) = app_with_workspace();
+        app.rename_workspace_input = Some("new-name".into());
+        smoke_render_workspace(&app, 120, 40);
+    }
+
+    #[test]
+    fn render_fullscreen_with_notch() {
+        let (mut app, _) = app_with_workspace();
+        app.toggle_terminal_fullscreen();
+        smoke_render_workspace(&app, 120, 40);
+        // Also test very small
+        smoke_render_workspace(&app, 30, 8);
+    }
+
+    #[test]
+    fn ws_info_string_basic() {
+        let (mut app, id) = app_with_workspace();
+        app.set_workspace_git(id, make_git_state());
+        let info = ws_info_string(&app);
+        assert!(info.contains("test"), "should contain workspace name: {}", info);
+        assert!(info.contains("main"), "should contain branch name: {}", info);
+    }
+
+    #[test]
+    fn ws_info_string_rename_mode() {
+        let (mut app, _) = app_with_workspace();
+        app.rename_workspace_input = Some("new-name".into());
+        let info = ws_info_string(&app);
+        assert!(
+            info.contains("Rename:"),
+            "should show rename prompt: {}",
+            info
+        );
+    }
+
+    #[test]
+    fn terminal_content_rect_inset_by_one() {
+        let area = Rect::new(0, 0, 120, 40);
+        let l = layout(area, Focus::WsTerminal, false);
+        let content = terminal_content_rect(area, Focus::WsTerminal, false);
+        assert_eq!(content.x, l.terminal_pane.x + 1);
+        assert_eq!(content.y, l.terminal_pane.y + 1);
+        assert_eq!(content.width, l.terminal_pane.width - 2);
+        assert_eq!(content.height, l.terminal_pane.height - 2);
+    }
+
+    #[test]
+    fn hit_test_multiple_tabs() {
+        let (mut app, _) = app_with_workspace();
+        // Add a second shell tab
+        app.ws_tabs.push(crate::app::TerminalTab {
+            id: "shell-2".into(),
+            label: "shell".into(),
+            kind: protocol::TerminalKind::Shell,
+            passthrough: false,
+            fullscreen: false,
+        });
+        let area = Rect::new(0, 0, 120, 40);
+        let l = layout(area, app.focus, app.terminal_fullscreen());
+        // Compute ranges and click in the third tab
+        let pane = l.terminal_pane;
+        let inner_left = pane.x + 1;
+        let inner_right = pane.right().saturating_sub(1);
+        let inner_width = inner_right.saturating_sub(inner_left);
+        let info = ws_info_string(&app);
+        let ws_info_width = (info.len() as u16).min(inner_width / 2);
+        let label_widths: Vec<u16> = app
+            .ws_tabs
+            .iter()
+            .enumerate()
+            .map(|(i, tab)| format!(" {}: {} ", i + 1, tab.label).len() as u16)
+            .collect();
+        let ranges = compute_tab_ranges(&pane, ws_info_width, &label_widths);
+        assert!(ranges.len() >= 3, "expected 3 tab ranges, got {}", ranges.len());
+        let third_tab_x = ranges[2].0 + 1;
+        let result = hit_test(area, &app, third_tab_x, l.terminal_pane.y);
+        assert!(
+            matches!(result, Some(WorkspaceHit::TerminalTab(2))),
+            "expected TerminalTab(2), got {:?}",
+            result
         );
     }
 }
