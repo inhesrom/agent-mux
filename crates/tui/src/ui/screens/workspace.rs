@@ -937,6 +937,39 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         );
     }
 
+    // --- Delete branch confirmation modal ---
+    if let Some(ref target) = app.confirm_delete_branch {
+        let prompt = match target {
+            crate::app::DeleteBranchTarget::Local { branch } => {
+                format!("Delete local branch '{branch}'?")
+            }
+            crate::app::DeleteBranchTarget::Remote { full_name, .. } => {
+                format!("Delete remote branch '{full_name}'?")
+            }
+        };
+        let modal_w = 60u16.min(area.width.saturating_sub(4));
+        let modal_h = 5u16;
+        let modal_rect = Rect::new(
+            area.x + (area.width.saturating_sub(modal_w)) / 2,
+            area.y + (area.height.saturating_sub(modal_h)) / 2,
+            modal_w,
+            modal_h,
+        );
+        frame.render_widget(Clear, modal_rect);
+        frame.render_widget(
+            Paragraph::new(prompt)
+                .block(
+                    Block::default()
+                        .title("Confirm (y = yes, n/Esc/Enter = cancel)")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                        .border_type(BorderType::Thick),
+                )
+                .wrap(Wrap { trim: false }),
+            modal_rect,
+        );
+    }
+
     // --- Stash message modal ---
     if let Some(input) = &app.stash_input {
         let modal_w = 60u16.min(area.width.saturating_sub(4));

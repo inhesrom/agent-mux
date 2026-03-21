@@ -280,6 +280,12 @@ pub enum BranchSubPane {
     Remote,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteBranchTarget {
+    Local { branch: String },
+    Remote { remote: String, branch: String, full_name: String },
+}
+
 pub struct TuiApp {
     pub route: Route,
     pub focus: Focus,
@@ -326,6 +332,7 @@ pub struct TuiApp {
     pub confirm_discard_file: Option<String>,
     pub stash_input: Option<String>,
     pub confirm_stash_pull_pop: Option<WorkspaceId>,
+    pub confirm_delete_branch: Option<DeleteBranchTarget>,
     pub ws_expanded_commit: Option<usize>,
     pub commit_files_cache: HashMap<String, Vec<String>>,
     pub ws_tag_filter: bool,
@@ -380,6 +387,7 @@ impl Default for TuiApp {
             confirm_discard_file: None,
             stash_input: None,
             confirm_stash_pull_pop: None,
+            confirm_delete_branch: None,
             ws_expanded_commit: None,
             commit_files_cache: HashMap::new(),
             ws_tag_filter: false,
@@ -1220,6 +1228,44 @@ impl TuiApp {
 
     pub fn take_stash_pull_pop(&mut self) -> Option<WorkspaceId> {
         self.confirm_stash_pull_pop.take()
+    }
+
+    pub fn is_confirming_delete_branch(&self) -> bool {
+        self.confirm_delete_branch.is_some()
+    }
+
+    pub fn begin_delete_branch(&mut self) {
+        match self.ws_branch_sub_pane {
+            BranchSubPane::Local => {
+                if let Some(branch) = self.selected_local_branch() {
+                    if !branch.is_head {
+                        self.confirm_delete_branch = Some(DeleteBranchTarget::Local {
+                            branch: branch.name.clone(),
+                        });
+                    }
+                }
+            }
+            BranchSubPane::Remote => {
+                if let Some(rb) = self.selected_remote_branch() {
+                    let full_name = rb.full_name.clone();
+                    if let Some((remote, branch)) = full_name.split_once('/') {
+                        self.confirm_delete_branch = Some(DeleteBranchTarget::Remote {
+                            remote: remote.to_string(),
+                            branch: branch.to_string(),
+                            full_name,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn cancel_delete_branch(&mut self) {
+        self.confirm_delete_branch = None;
+    }
+
+    pub fn take_delete_branch(&mut self) -> Option<DeleteBranchTarget> {
+        self.confirm_delete_branch.take()
     }
 
     pub fn is_stashing(&self) -> bool {
@@ -2840,5 +2886,81 @@ mod tests {
     fn take_add_workspace_request_no_browser() {
         let mut app = TuiApp::default();
         assert!(app.take_add_workspace_request().is_none());
+    }
+
+    // ===== Delete branch =====
+
+    #[test]
+    fn begin_delete_branch_local() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.ws_branch_sub_pane = BranchSubPane::Local;
+        app.ws_selected_local_branch = 1; // "dev", not HEAD
+        app.begin_delete_branch();
+        assert_eq!(
+            app.confirm_delete_branch,
+            Some(DeleteBranchTarget::Local {
+                branch: "dev".into()
+            })
+        );
+    }
+
+    #[test]
+    fn begin_delete_branch_remote() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.ws_branch_sub_pane = BranchSubPane::Remote;
+        app.ws_selected_remote_branch = 0; // "origin/main"
+        app.begin_delete_branch();
+        assert_eq!(
+            app.confirm_delete_branch,
+            Some(DeleteBranchTarget::Remote {
+                remote: "origin".into(),
+                branch: "main".into(),
+                full_name: "origin/main".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn begin_delete_branch_head_is_noop() {
+        let mut app = app_with_workspaces(1);
+        let id = app.workspaces[0].id;
+        app.open_workspace(id);
+        app.set_workspace_git(id, make_git_state());
+        app.ws_branch_sub_pane = BranchSubPane::Local;
+        app.ws_selected_local_branch = 0; // "main", HEAD
+        app.begin_delete_branch();
+        assert!(app.confirm_delete_branch.is_none());
+    }
+
+    #[test]
+    fn cancel_delete_branch_clears_state() {
+        let mut app = TuiApp::default();
+        app.confirm_delete_branch = Some(DeleteBranchTarget::Local {
+            branch: "foo".into(),
+        });
+        app.cancel_delete_branch();
+        assert!(app.confirm_delete_branch.is_none());
+    }
+
+    #[test]
+    fn take_delete_branch_extracts_and_clears() {
+        let mut app = TuiApp::default();
+        app.confirm_delete_branch = Some(DeleteBranchTarget::Local {
+            branch: "foo".into(),
+        });
+        let taken = app.take_delete_branch();
+        assert_eq!(
+            taken,
+            Some(DeleteBranchTarget::Local {
+                branch: "foo".into()
+            })
+        );
+        assert!(app.confirm_delete_branch.is_none());
     }
 }

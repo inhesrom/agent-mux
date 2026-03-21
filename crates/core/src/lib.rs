@@ -24,9 +24,10 @@ struct GitRefreshResult {
 
 use workspace::attention::AttentionDetector;
 use workspace::git::{
-    checkout_branch, checkout_remote_branch, commit, create_branch, diff_commit, diff_commit_file,
-    diff_file, discard_file, git_fetch, git_pull, git_push, git_stash, git_stash_pull_pop,
-    list_commit_files, refresh_git, stage_all, stage_file, unstage_all, unstage_file,
+    checkout_branch, checkout_remote_branch, commit, create_branch, delete_local_branch,
+    delete_remote_branch, diff_commit, diff_commit_file, diff_file, discard_file, git_fetch,
+    git_pull, git_push, git_stash, git_stash_pull_pop, list_commit_files, refresh_git, stage_all,
+    stage_file, unstage_all, unstage_file,
 };
 use workspace::ssh;
 use workspace::terminal::{start_terminal, TerminalOutput};
@@ -389,6 +390,46 @@ pub fn spawn_core() -> CoreHandle {
                             };
                             let _ = evt_tx.send(Event::GitActionResult {
                                 id, action: "create_branch".to_string(), success, message: msg,
+                            });
+                            let _ = git_tx.send(GitRefreshResult {
+                                id, result: refresh_git(&path, ssh.as_ref()).await,
+                            }).await;
+                        });
+                    }
+                }
+                Command::GitDeleteLocalBranch { id, branch } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let evt_tx = evt_tx_task.clone();
+                        let git_tx = git_result_tx.clone();
+                        tokio::spawn(async move {
+                            let (success, msg) = match delete_local_branch(&path, &branch, ssh.as_ref()).await {
+                                Ok(()) => (true, format!("Deleted local branch {branch}")),
+                                Err(e) => (false, e.to_string()),
+                            };
+                            let _ = evt_tx.send(Event::GitActionResult {
+                                id, action: "delete_branch".to_string(), success, message: msg,
+                            });
+                            let _ = git_tx.send(GitRefreshResult {
+                                id, result: refresh_git(&path, ssh.as_ref()).await,
+                            }).await;
+                        });
+                    }
+                }
+                Command::GitDeleteRemoteBranch { id, remote, branch } => {
+                    if let Some(ws) = state.workspaces.get(&id) {
+                        let path = ws.path.clone();
+                        let ssh = ws.ssh.clone();
+                        let evt_tx = evt_tx_task.clone();
+                        let git_tx = git_result_tx.clone();
+                        tokio::spawn(async move {
+                            let (success, msg) = match delete_remote_branch(&path, &remote, &branch, ssh.as_ref()).await {
+                                Ok(()) => (true, format!("Deleted remote branch {remote}/{branch}")),
+                                Err(e) => (false, e.to_string()),
+                            };
+                            let _ = evt_tx.send(Event::GitActionResult {
+                                id, action: "delete_remote_branch".to_string(), success, message: msg,
                             });
                             let _ = git_tx.send(GitRefreshResult {
                                 id, result: refresh_git(&path, ssh.as_ref()).await,

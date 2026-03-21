@@ -713,6 +713,41 @@ pub async fn checkout_remote_branch(
     Ok(())
 }
 
+pub async fn delete_local_branch(
+    repo: &Path,
+    branch: &str,
+    ssh: Option<&SshTarget>,
+) -> Result<()> {
+    let out = ssh::build_command(ssh, repo, "git", &["branch", "-D", branch])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git branch -D failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
+}
+
+pub async fn delete_remote_branch(
+    repo: &Path,
+    remote: &str,
+    branch: &str,
+    ssh: Option<&SshTarget>,
+) -> Result<()> {
+    let out = ssh::build_command(ssh, repo, "git", &["push", remote, "--delete", branch])
+        .output()
+        .await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git push --delete failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
+}
+
 pub async fn git_push(repo: &Path, ssh: Option<&SshTarget>) -> Result<()> {
     let out = ssh::build_command(ssh, repo, "git", &["push", "-u", "origin", "HEAD"])
         .output()

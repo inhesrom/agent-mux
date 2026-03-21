@@ -1253,6 +1253,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                         && !app.is_creating_branch()
                         && !app.is_confirming_discard()
                         && !app.is_confirming_stash_pull_pop()
+                        && !app.is_confirming_delete_branch()
                         && !app.is_stashing()
                         && !app.is_settings_open()
                         && !matches!(app.focus, app::Focus::WsTerminal)
@@ -1732,6 +1733,46 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
+                            if app.is_confirming_delete_branch() {
+                                match key.code {
+                                    KeyCode::Char('y') => {
+                                        if let Some(target) = app.take_delete_branch() {
+                                            match target {
+                                                app::DeleteBranchTarget::Local { branch } => {
+                                                    let _ = backend
+                                                        .cmd_tx
+                                                        .send(Command::GitDeleteLocalBranch {
+                                                            id,
+                                                            branch,
+                                                        })
+                                                        .await;
+                                                }
+                                                app::DeleteBranchTarget::Remote {
+                                                    remote,
+                                                    branch,
+                                                    ..
+                                                } => {
+                                                    app.begin_git_op(id);
+                                                    let _ = backend
+                                                        .cmd_tx
+                                                        .send(Command::GitDeleteRemoteBranch {
+                                                            id,
+                                                            remote,
+                                                            branch,
+                                                        })
+                                                        .await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Char('n') | KeyCode::Esc | KeyCode::Enter => {
+                                        app.cancel_delete_branch();
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            }
+
                             if app.is_stashing() {
                                 match key.code {
                                     KeyCode::Esc => {
@@ -2025,6 +2066,11 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                     if matches!(app.ws_branch_sub_pane, app::BranchSubPane::Local) {
                                         app.begin_create_branch();
                                     }
+                                }
+                                KeyCode::Char('D')
+                                    if matches!(app.focus, app::Focus::WsBranches) =>
+                                {
+                                    app.begin_delete_branch();
                                 }
                                 KeyCode::Char('[')
                                     if matches!(app.focus, app::Focus::WsBranches) =>

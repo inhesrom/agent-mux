@@ -170,6 +170,15 @@ pub enum Command {
         id: WorkspaceId,
         branch: String,
     },
+    GitDeleteLocalBranch {
+        id: WorkspaceId,
+        branch: String,
+    },
+    GitDeleteRemoteBranch {
+        id: WorkspaceId,
+        remote: String,
+        branch: String,
+    },
     GitPush {
         id: WorkspaceId,
     },
