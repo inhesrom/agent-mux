@@ -1570,6 +1570,7 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                                 &backend.cmd_tx,
                                                 id,
                                                 &app.ws_tabs,
+                                                app.settings.yolo_mode,
                                             )
                                             .await;
                                             let _ = backend
@@ -1923,6 +1924,29 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             // Shift+F toggles terminal fullscreen from any workspace pane.
                             if key.code == KeyCode::Char('F') {
                                 app.toggle_terminal_fullscreen();
+                                continue;
+                            }
+
+                            // Shift+Y toggles YOLO mode from any workspace pane.
+                            if key.code == KeyCode::Char('Y') {
+                                app.toggle_yolo_mode();
+                                let _ = backend
+                                    .cmd_tx
+                                    .send(Command::StopTerminal {
+                                        id,
+                                        kind: TerminalKind::Agent,
+                                        tab_id: Some("agent".to_string()),
+                                    })
+                                    .await;
+                                let _ = backend
+                                    .cmd_tx
+                                    .send(Command::StartTerminal {
+                                        id,
+                                        kind: TerminalKind::Agent,
+                                        tab_id: Some("agent".to_string()),
+                                        cmd: agent_cmd_continue(app.settings.yolo_mode),
+                                    })
+                                    .await;
                                 continue;
                             }
 
@@ -2660,7 +2684,7 @@ async fn handle_mouse(
                     app.set_home_selection(idx);
                     if let Some(id) = app.selected_workspace_id() {
                         app.open_workspace(id);
-                        start_workspace_tab_terminals(cmd_tx, id, &app.ws_tabs).await;
+                        start_workspace_tab_terminals(cmd_tx, id, &app.ws_tabs, app.settings.yolo_mode).await;
                         let _ = cmd_tx.send(Command::RefreshGit { id }).await;
                         let _ = cmd_tx.send(Command::ClearAttention { id }).await;
                     }
@@ -3343,18 +3367,40 @@ fn extract_selected_text_from_buf(
     trimmed.to_string()
 }
 
+fn agent_cmd(yolo: bool) -> Vec<String> {
+    let mut cmd = vec!["claude".to_string()];
+    if yolo {
+        cmd.push("--dangerously-skip-permissions".to_string());
+    }
+    cmd
+}
+
+fn agent_cmd_continue(yolo: bool) -> Vec<String> {
+    let mut cmd = vec!["claude".to_string(), "-c".to_string()];
+    if yolo {
+        cmd.push("--dangerously-skip-permissions".to_string());
+    }
+    cmd
+}
+
 async fn start_workspace_tab_terminals(
     cmd_tx: &tokio::sync::mpsc::Sender<Command>,
     id: protocol::WorkspaceId,
     tabs: &[app::TerminalTab],
+    yolo: bool,
 ) {
     for tab in tabs {
+        let cmd = if tab.kind == protocol::TerminalKind::Agent {
+            agent_cmd(yolo)
+        } else {
+            Vec::new()
+        };
         let _ = cmd_tx
             .send(Command::StartTerminal {
                 id,
                 kind: tab.kind,
                 tab_id: Some(tab.id.clone()),
-                cmd: Vec::new(),
+                cmd,
             })
             .await;
     }

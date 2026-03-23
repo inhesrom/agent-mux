@@ -800,6 +800,89 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
         }
     }
 
+    // --- Agent status bar on bottom border of terminal pane ---
+    {
+        let bottom_y = pane.bottom().saturating_sub(1);
+        let inner_left = pane.x + 1;
+        let inner_right = pane.right().saturating_sub(1);
+        let buf = frame.buffer_mut();
+
+        // Toggle on the left side
+        let yolo = app.settings.yolo_mode;
+        let (toggle_text, toggle_style) = if yolo {
+            (
+                "YOLO Mode \u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{25CF}",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            (
+                "\u{25CF}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501} Safe Mode",
+                Style::default().fg(ORANGE),
+            )
+        };
+
+        let toggle_start = inner_left + 1;
+        let toggle_len = toggle_text.chars().count() as u16;
+        for (i, ch) in toggle_text.chars().enumerate() {
+            let x = toggle_start + i as u16;
+            if x < inner_right && x >= inner_left && bottom_y < buf.area().height {
+                buf[(x, bottom_y)].set_char(ch).set_style(toggle_style);
+            }
+        }
+
+        // Agent status fields right-aligned
+        if let Some(ws_id) = ws_id {
+            if let Some(status) = app.agent_status(ws_id) {
+                let mut segments: Vec<(String, Style)> = Vec::new();
+                if let Some(ref model) = status.model {
+                    segments.push((
+                        model.clone(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                if let Some(ref effort) = status.effort {
+                    segments.push((
+                        format!("Effort: {}", effort),
+                        Style::default().fg(Color::White),
+                    ));
+                }
+                if let Some(ref pct) = status.context_pct {
+                    segments.push((
+                        pct.clone(),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+
+                let gap = 2u16;
+                let mut cursor = inner_right.saturating_sub(1);
+                let left_limit = toggle_start + toggle_len + gap;
+                for (text, style) in segments.iter().rev() {
+                    let len = text.chars().count() as u16;
+                    let start = cursor.saturating_sub(len);
+                    if start < left_limit {
+                        break;
+                    }
+                    for (i, ch) in text.chars().enumerate() {
+                        let x = start + i as u16;
+                        if x < cursor
+                            && x >= inner_left
+                            && bottom_y < buf.area().height
+                        {
+                            buf[(x, bottom_y)].set_char(ch).set_style(*style);
+                        }
+                    }
+                    cursor = start.saturating_sub(gap);
+                }
+            }
+        }
+    }
+
     // --- Footer ---
     footer::render(frame, l.footer, app);
 

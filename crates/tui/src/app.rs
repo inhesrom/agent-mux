@@ -982,6 +982,55 @@ impl TuiApp {
         lines
     }
 
+    /// Parses the agent terminal's last screen row for Claude Code status info.
+    /// Returns `None` if Claude Code is not detected (via terminal title).
+    pub fn agent_status(&self, id: WorkspaceId) -> Option<AgentStatus> {
+        let state = self.terminal_state.get(&id)?;
+        let tab = state.tabs.get("agent")?;
+        let screen = tab.parser.screen();
+
+        // Detect Claude Code via terminal title
+        if !screen.title().contains("claude") {
+            return None;
+        }
+
+        let (rows, cols) = screen.size();
+        let last_row = rows.saturating_sub(1);
+        let mut text = String::new();
+        for c in 0..cols {
+            if let Some(cell) = screen.cell(last_row, c) {
+                if cell.has_contents() {
+                    text.push_str(&cell.contents());
+                } else {
+                    text.push(' ');
+                }
+            }
+        }
+
+        let model = ["Opus", "Sonnet", "Haiku"]
+            .iter()
+            .find(|m| text.contains(**m))
+            .map(|m| m.to_string());
+
+        let effort = if let Some(pos) = text.find("Effort:") {
+            let after = text[pos + 7..].trim_start();
+            after.split_whitespace().next().map(|s| s.to_string())
+        } else {
+            None
+        };
+
+        let context_pct = text
+            .split_whitespace()
+            .find(|w| w.ends_with('%') && w[..w.len() - 1].chars().all(|c| c.is_ascii_digit()))
+            .map(|s| s.to_string());
+
+        Some(AgentStatus {
+            model,
+            effort,
+            context_pct,
+        })
+    }
+
     /// Extracts the most recent `num_lines` non-empty rows from a workspace's
     /// agent terminal, with full ANSI styling.
     ///
@@ -1362,6 +1411,11 @@ impl TuiApp {
         self.settings_open = false;
     }
 
+    pub fn toggle_yolo_mode(&mut self) {
+        self.settings.yolo_mode = !self.settings.yolo_mode;
+        let _ = save_settings(&self.settings);
+    }
+
     pub fn toggle_selected_setting(&mut self) {
         match self.settings_selected {
             0 => self.settings.attention_notifications = !self.settings.attention_notifications,
@@ -1643,6 +1697,12 @@ fn sanitize_workspace_tabs(mut state: WorkspaceTabsState) -> WorkspaceTabsState 
     state
 }
 
+pub struct AgentStatus {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub context_pct: Option<String>,
+}
+
 pub struct WorkspaceTerminalState {
     pub tabs: HashMap<String, TerminalBufferState>,
 }
@@ -1848,6 +1908,8 @@ pub struct Settings {
     pub attention_notifications: bool,
     #[serde(default = "default_preview_lines")]
     pub preview_lines: u16,
+    #[serde(default)]
+    pub yolo_mode: bool,
 }
 
 fn default_true() -> bool {
@@ -1863,6 +1925,7 @@ impl Default for Settings {
         Self {
             attention_notifications: true,
             preview_lines: 12,
+            yolo_mode: false,
         }
     }
 }
