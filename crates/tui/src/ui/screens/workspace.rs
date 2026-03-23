@@ -14,6 +14,7 @@ use protocol::{AttentionLevel, Route};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceHit {
+    WorkspaceBarPill(usize),
     TerminalTab(usize),
     TerminalPane,
     LogList(usize),
@@ -57,7 +58,9 @@ fn layout(area: Rect, focus: crate::app::Focus, terminal_fullscreen: bool) -> Wo
     let body = Layout::default()
         .direction(Direction::Vertical)
         .constraints(match focus {
-            crate::app::Focus::WsTerminal | crate::app::Focus::WsTerminalTabs => {
+            crate::app::Focus::WsBar
+            | crate::app::Focus::WsTerminal
+            | crate::app::Focus::WsTerminalTabs => {
                 [Constraint::Percentage(72), Constraint::Percentage(28)]
             }
             crate::app::Focus::WsLog
@@ -287,12 +290,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &TuiApp) {
     );
 
     // --- Workspace status bar ---
+    let bar_selected = if matches!(app.focus, crate::app::Focus::WsBar) {
+        Some(app.ws_bar_selected)
+    } else {
+        None
+    };
     let bar_line = workspace_bar::build_workspace_bar_line(
         &app.workspaces,
         ws_id,
         app.spinner_tick % 2 == 0,
         app.settings.attention_notifications,
         l.workspace_bar.width,
+        bar_selected,
     );
     frame.render_widget(Paragraph::new(bar_line), l.workspace_bar);
 
@@ -1105,6 +1114,16 @@ pub fn hit_test(area: Rect, app: &TuiApp, x: u16, y: u16) -> Option<WorkspaceHit
     let l = layout(area, app.focus, app.terminal_fullscreen());
 
     let point_inside = |r: Rect| x >= r.x && y >= r.y && x < r.right() && y < r.bottom();
+
+    // Check if click is on the workspace bar
+    if point_inside(l.workspace_bar) {
+        if let Some(idx) =
+            crate::ui::widgets::workspace_bar::pill_index_at(l.workspace_bar, &app.workspaces, x, y)
+        {
+            return Some(WorkspaceHit::WorkspaceBarPill(idx));
+        }
+        return None;
+    }
 
     // Check if click is on the terminal pane's top border (tab area)
     let border_y = l.terminal_pane.y;

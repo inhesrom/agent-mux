@@ -2020,8 +2020,59 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                             if key.code == KeyCode::Esc {
                                 if matches!(app.focus, app::Focus::WsTerminal) {
                                     app.focus = app::Focus::WsTerminalTabs;
+                                } else if matches!(app.focus, app::Focus::WsBar) {
+                                    app.focus = app::Focus::WsTerminal;
                                 } else {
                                     app.go_home();
+                                }
+                                continue;
+                            }
+
+                            // Workspace bar navigation
+                            if matches!(app.focus, app::Focus::WsBar) {
+                                match key.code {
+                                    KeyCode::Left | KeyCode::Char('h') => {
+                                        app.ws_bar_selected =
+                                            app.ws_bar_selected.saturating_sub(1);
+                                    }
+                                    KeyCode::Right | KeyCode::Char('l') => {
+                                        app.ws_bar_selected = (app.ws_bar_selected + 1)
+                                            .min(app.workspaces.len().saturating_sub(1));
+                                    }
+                                    KeyCode::Enter => {
+                                        if let Some(target) =
+                                            app.workspaces.get(app.ws_bar_selected)
+                                        {
+                                            let target_id = target.id;
+                                            if Some(target_id)
+                                                != app.active_workspace_id()
+                                            {
+                                                app.open_workspace(target_id);
+                                                start_workspace_tab_terminals(
+                                                    &backend.cmd_tx,
+                                                    target_id,
+                                                    &app.ws_tabs,
+                                                    &app.settings,
+                                                )
+                                                .await;
+                                                let _ = backend
+                                                    .cmd_tx
+                                                    .send(Command::RefreshGit {
+                                                        id: target_id,
+                                                    })
+                                                    .await;
+                                                let _ = backend
+                                                    .cmd_tx
+                                                    .send(Command::ClearAttention {
+                                                        id: target_id,
+                                                    })
+                                                    .await;
+                                            } else {
+                                                app.focus = app::Focus::WsTerminal;
+                                            }
+                                        }
+                                    }
+                                    _ => {}
                                 }
                                 continue;
                             }
@@ -2539,18 +2590,20 @@ fn apply_event(app: &mut TuiApp, evt: CoreEvent) {
 
 fn cycle_workspace_focus(focus: app::Focus) -> app::Focus {
     match focus {
+        app::Focus::WsBar => app::Focus::WsTerminalTabs,
         app::Focus::WsTerminalTabs => app::Focus::WsTerminal,
         app::Focus::WsTerminal => app::Focus::WsLog,
         app::Focus::WsLog => app::Focus::WsBranches,
         app::Focus::WsBranches => app::Focus::WsDiff,
-        app::Focus::WsDiff => app::Focus::WsTerminalTabs,
+        app::Focus::WsDiff => app::Focus::WsBar,
         _ => app::Focus::WsTerminalTabs,
     }
 }
 
 fn cycle_workspace_focus_reverse(focus: app::Focus) -> app::Focus {
     match focus {
-        app::Focus::WsTerminalTabs => app::Focus::WsDiff,
+        app::Focus::WsBar => app::Focus::WsDiff,
+        app::Focus::WsTerminalTabs => app::Focus::WsBar,
         app::Focus::WsTerminal => app::Focus::WsTerminalTabs,
         app::Focus::WsLog => app::Focus::WsTerminal,
         app::Focus::WsBranches => app::Focus::WsLog,
@@ -2900,6 +2953,20 @@ async fn handle_mouse(
                     ui::screens::workspace::hit_test(area, app, mouse.column, mouse.row)
                 {
                     match hit {
+                        ui::screens::workspace::WorkspaceHit::WorkspaceBarPill(idx) => {
+                            if let Some(target) = app.workspaces.get(idx) {
+                                let target_id = target.id;
+                                if Some(target_id) != app.active_workspace_id() {
+                                    app.open_workspace(target_id);
+                                    start_workspace_tab_terminals(
+                                        cmd_tx, target_id, &app.ws_tabs, &app.settings,
+                                    )
+                                    .await;
+                                    let _ = cmd_tx.send(Command::RefreshGit { id: target_id }).await;
+                                    let _ = cmd_tx.send(Command::ClearAttention { id: target_id }).await;
+                                }
+                            }
+                        }
                         ui::screens::workspace::WorkspaceHit::TerminalTab(idx) => {
                             app.focus = app::Focus::WsTerminalTabs;
                             app.set_active_tab_index(idx);

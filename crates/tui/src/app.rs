@@ -259,6 +259,7 @@ impl MouseSelection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     HomeGrid,
+    WsBar,
     WsLog,
     WsBranches,
     WsDiff,
@@ -299,6 +300,7 @@ pub struct TuiApp {
     pub ws_tabs: Vec<TerminalTab>,
     pub ws_active_tab: usize,
     pub ws_next_shell_tab: u32,
+    pub ws_bar_selected: usize,
     pub home_selected: usize,
     pub ws_uncommitted_expanded: bool,
     pub ws_selected_commit: usize,
@@ -371,6 +373,7 @@ impl Default for TuiApp {
             ],
             ws_active_tab: 0,
             ws_next_shell_tab: 2,
+            ws_bar_selected: 0,
             home_selected: 0,
             ws_uncommitted_expanded: false,
             ws_selected_commit: 0,
@@ -445,6 +448,11 @@ impl TuiApp {
         self.route = Route::Workspace { id };
         self.focus = Focus::WsTerminal;
         self.load_tabs_for_workspace(id);
+        self.ws_bar_selected = self
+            .workspaces
+            .iter()
+            .position(|w| w.id == id)
+            .unwrap_or(0);
     }
 
     pub fn go_home(&mut self) {

@@ -1,4 +1,5 @@
 use protocol::{AttentionLevel, WorkspaceId, WorkspaceSummary};
+use ratatui::layout::Rect;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -15,6 +16,7 @@ pub fn build_workspace_bar_line(
     flash_on: bool,
     attention_enabled: bool,
     max_width: u16,
+    selected_idx: Option<usize>,
 ) -> Line<'static> {
     if workspaces.is_empty() {
         return Line::from("");
@@ -25,16 +27,19 @@ pub fn build_workspace_bar_line(
     // Build pill data for each workspace.
     let mut pills: Vec<PillData> = workspaces
         .iter()
-        .map(|ws| {
+        .enumerate()
+        .map(|(i, ws)| {
             let is_active = active_id == Some(ws.id);
             let attention = if attention_enabled {
                 ws.attention
             } else {
                 AttentionLevel::None
             };
+            let is_selected = selected_idx == Some(i);
             PillData {
                 name: ws.name.clone(),
                 is_active,
+                is_selected,
                 attention,
                 agent_running: ws.agent_running,
             }
@@ -77,6 +82,7 @@ pub fn build_workspace_bar_line(
 struct PillData {
     name: String,
     is_active: bool,
+    is_selected: bool,
     attention: AttentionLevel,
     agent_running: bool,
 }
@@ -101,6 +107,11 @@ impl PillData {
     }
 
     fn base_style(&self, flash_on: bool) -> Style {
+        if self.is_selected && !self.is_active {
+            return Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::UNDERLINED);
+        }
         if self.is_active {
             return Style::default()
                 .fg(Color::LightBlue)
@@ -230,4 +241,39 @@ fn build_overflow_line(
     }
 
     Line::from(spans)
+}
+
+/// Returns the workspace index for the pill at position (x, y) within the bar rect.
+/// Used for mouse hit testing.
+pub fn pill_index_at(
+    bar: Rect,
+    workspaces: &[WorkspaceSummary],
+    x: u16,
+    y: u16,
+) -> Option<usize> {
+    if workspaces.is_empty() || y < bar.y || y >= bar.bottom() || x < bar.x || x >= bar.right() {
+        return None;
+    }
+
+    let divider_width: u16 = 3;
+    let mut cursor = bar.x;
+
+    for (i, ws) in workspaces.iter().enumerate() {
+        if i > 0 {
+            cursor += divider_width;
+        }
+        let icon_w: u16 = match ws.attention {
+            AttentionLevel::NeedsInput | AttentionLevel::Error => 2,
+            _ => 0,
+        };
+        let dot_w: u16 = if ws.agent_running { 2 } else { 0 };
+        let pill_w = 1 + icon_w + ws.name.chars().count() as u16 + dot_w + 1;
+        let end = cursor + pill_w;
+
+        if x >= cursor && x < end {
+            return Some(i);
+        }
+        cursor = end;
+    }
+    None
 }
