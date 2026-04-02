@@ -2015,6 +2015,48 @@ async fn run_tui(mut backend: Backend) -> Result<()> {
                                 continue;
                             }
 
+                            // Workspace switching hotkeys (work from any focus,
+                            // including passthrough).
+                            if app.workspaces.len() > 1 {
+                                let switch_delta =
+                                    if keymap::matches_keybinding(key, &app.settings.prev_workspace_key) {
+                                        Some(-1i32)
+                                    } else if keymap::matches_keybinding(key, &app.settings.next_workspace_key) {
+                                        Some(1i32)
+                                    } else {
+                                        None
+                                    };
+                                if let Some(delta) = switch_delta {
+                                    let cur = app
+                                        .workspaces
+                                        .iter()
+                                        .position(|w| Some(w.id) == app.active_workspace_id())
+                                        .unwrap_or(0);
+                                    let len = app.workspaces.len();
+                                    let next_idx = ((cur as i32 + delta).rem_euclid(len as i32)) as usize;
+                                    if let Some(target) = app.workspaces.get(next_idx) {
+                                        let target_id = target.id;
+                                        app.open_workspace(target_id);
+                                        start_workspace_tab_terminals(
+                                            &backend.cmd_tx,
+                                            target_id,
+                                            &app.ws_tabs,
+                                            &app.settings,
+                                        )
+                                        .await;
+                                        let _ = backend
+                                            .cmd_tx
+                                            .send(Command::RefreshGit { id: target_id })
+                                            .await;
+                                        let _ = backend
+                                            .cmd_tx
+                                            .send(Command::ClearAttention { id: target_id })
+                                            .await;
+                                    }
+                                    continue;
+                                }
+                            }
+
                             // In passthrough mode, forward everything (including Esc/Tab)
                             // to the terminal.
                             if app.active_tab_passthrough()

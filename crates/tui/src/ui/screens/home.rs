@@ -394,7 +394,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
     }
 
     if app.is_settings_open() {
-        let modal = centered_rect(area, 56, 15);
+        let modal = centered_rect(area, 56, 17);
         frame.render_widget(Clear, modal);
 
         let key_style = Style::default()
@@ -492,6 +492,50 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             fc_toggle,
         ]);
 
+        // Row 6: Prev workspace hotkey
+        let prev_val = if app.settings_selected == 6 {
+            if let Some(buf) = &app.settings_edit_buffer {
+                Span::styled(format!("{}▏", buf), edit_style)
+            } else {
+                Span::styled(
+                    app.settings.prev_workspace_key.clone(),
+                    Style::default().fg(Color::Cyan),
+                )
+            }
+        } else {
+            Span::styled(
+                app.settings.prev_workspace_key.clone(),
+                Style::default().fg(Color::Cyan),
+            )
+        };
+        let row6 = Line::from(vec![
+            Span::styled(cursor_str(6), cursor_style),
+            Span::raw("Prev workspace key        "),
+            prev_val,
+        ]);
+
+        // Row 7: Next workspace hotkey
+        let next_val = if app.settings_selected == 7 {
+            if let Some(buf) = &app.settings_edit_buffer {
+                Span::styled(format!("{}▏", buf), edit_style)
+            } else {
+                Span::styled(
+                    app.settings.next_workspace_key.clone(),
+                    Style::default().fg(Color::Cyan),
+                )
+            }
+        } else {
+            Span::styled(
+                app.settings.next_workspace_key.clone(),
+                Style::default().fg(Color::Cyan),
+            )
+        };
+        let row7 = Line::from(vec![
+            Span::styled(cursor_str(7), cursor_style),
+            Span::raw("Next workspace key        "),
+            next_val,
+        ]);
+
         let (title, body) = if app.confirming_delete_agent {
             let agent_name = app
                 .settings
@@ -511,7 +555,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                 ]),
                 Line::from(""),
             ];
-            while lines.len() < 9 {
+            while lines.len() < 11 {
                 lines.push(Line::from(""));
             }
             lines.push(Line::from(vec![
@@ -554,7 +598,7 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
             ]));
 
             // Pad to fill modal
-            while lines.len() < 9 {
+            while lines.len() < 11 {
                 lines.push(Line::from(""));
             }
 
@@ -608,7 +652,8 @@ fn render_modals(frame: &mut Frame, area: Rect, app: &TuiApp) {
                     row3,
                     row4,
                     row5,
-                    Line::from(""),
+                    row6,
+                    row7,
                     Line::from(""),
                     hint,
                 ],

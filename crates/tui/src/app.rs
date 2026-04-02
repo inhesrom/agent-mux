@@ -1492,6 +1492,12 @@ impl TuiApp {
             3 => self.settings.attention_notifications = !self.settings.attention_notifications,
             4 => {} // preview_lines uses adjust, not toggle
             5 => self.settings.show_frame_counter = !self.settings.show_frame_counter,
+            6 => {
+                self.settings_edit_buffer = Some(self.settings.prev_workspace_key.clone());
+            }
+            7 => {
+                self.settings_edit_buffer = Some(self.settings.next_workspace_key.clone());
+            }
             _ => {}
         }
         let _ = save_settings(&self.settings);
@@ -1527,7 +1533,7 @@ impl TuiApp {
     }
 
     pub fn settings_count(&self) -> usize {
-        6
+        8
     }
 
     pub fn is_editing_setting(&self) -> bool {
@@ -1537,27 +1543,42 @@ impl TuiApp {
     pub fn confirm_setting_edit(&mut self) {
         if let Some(buf) = self.settings_edit_buffer.take() {
             let trimmed = buf.trim().to_string();
-            // Find the active agent index
-            let idx = self
-                .settings
-                .agents
-                .iter()
-                .position(|a| a.name == self.settings.default_agent);
-            if let Some(idx) = idx {
-                match self.settings_selected {
-                    1 => {
-                        if !trimmed.is_empty() {
-                            self.settings.agents[idx].command = trimmed;
+            match self.settings_selected {
+                1 | 2 => {
+                    // Agent fields — find the active agent index
+                    let idx = self
+                        .settings
+                        .agents
+                        .iter()
+                        .position(|a| a.name == self.settings.default_agent);
+                    if let Some(idx) = idx {
+                        match self.settings_selected {
+                            1 => {
+                                if !trimmed.is_empty() {
+                                    self.settings.agents[idx].command = trimmed;
+                                }
+                            }
+                            2 => {
+                                self.settings.agents[idx].yolo_flags = trimmed
+                                    .split_whitespace()
+                                    .map(|s| s.to_string())
+                                    .collect();
+                            }
+                            _ => {}
                         }
                     }
-                    2 => {
-                        self.settings.agents[idx].yolo_flags = trimmed
-                            .split_whitespace()
-                            .map(|s| s.to_string())
-                            .collect();
-                    }
-                    _ => {}
                 }
+                6 => {
+                    if !trimmed.is_empty() {
+                        self.settings.prev_workspace_key = trimmed;
+                    }
+                }
+                7 => {
+                    if !trimmed.is_empty() {
+                        self.settings.next_workspace_key = trimmed;
+                    }
+                }
+                _ => {}
             }
             let _ = save_settings(&self.settings);
         }
@@ -2136,6 +2157,10 @@ pub struct Settings {
     pub default_agent: String,
     #[serde(default)]
     pub show_frame_counter: bool,
+    #[serde(default = "default_prev_workspace_key")]
+    pub prev_workspace_key: String,
+    #[serde(default = "default_next_workspace_key")]
+    pub next_workspace_key: String,
 }
 
 fn default_true() -> bool {
@@ -2167,6 +2192,14 @@ fn default_default_agent() -> String {
     "claude".to_string()
 }
 
+fn default_prev_workspace_key() -> String {
+    "ctrl+shift+h".to_string()
+}
+
+fn default_next_workspace_key() -> String {
+    "ctrl+shift+l".to_string()
+}
+
 impl Settings {
     /// Returns the active agent profile (the default, or first if not found).
     pub fn active_agent(&self) -> Option<&AgentProfile> {
@@ -2186,6 +2219,8 @@ impl Default for Settings {
             agents: default_agents(),
             default_agent: default_default_agent(),
             show_frame_counter: false,
+            prev_workspace_key: default_prev_workspace_key(),
+            next_workspace_key: default_next_workspace_key(),
         }
     }
 }
