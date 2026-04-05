@@ -3066,12 +3066,45 @@ async fn handle_mouse(
                         ui::screens::workspace::WorkspaceHit::LogList(idx) => {
                             app.focus = app::Focus::WsLog;
                             app.ws_selected_commit = idx;
-                            if let Some(file) = app.selected_log_file() {
-                                let _ = cmd_tx.send(Command::LoadDiff { id, file }).await;
-                            } else if let Some((hash, file)) = app.selected_commit_file() {
-                                let _ = cmd_tx
-                                    .send(Command::LoadCommitFileDiff { id, hash, file })
-                                    .await;
+                            match app.log_item_at(idx) {
+                                app::LogItem::UncommittedHeader => {
+                                    app.ws_uncommitted_expanded =
+                                        !app.ws_uncommitted_expanded;
+                                }
+                                app::LogItem::ChangedFile(_) => {
+                                    if let Some(file) = app.selected_log_file() {
+                                        let _ =
+                                            cmd_tx.send(Command::LoadDiff { id, file }).await;
+                                    }
+                                }
+                                app::LogItem::Commit(ci) => {
+                                    if app.ws_expanded_commit == Some(ci) {
+                                        app.ws_expanded_commit = None;
+                                    } else {
+                                        app.ws_expanded_commit = Some(ci);
+                                        if let Some(hash) = app.selected_commit_hash() {
+                                            if !app.commit_files_cache.contains_key(&hash) {
+                                                let _ = cmd_tx
+                                                    .send(Command::LoadCommitFiles {
+                                                        id,
+                                                        hash,
+                                                    })
+                                                    .await;
+                                            }
+                                        }
+                                    }
+                                }
+                                app::LogItem::CommitFile(_, _) => {
+                                    if let Some((hash, file)) = app.selected_commit_file() {
+                                        let _ = cmd_tx
+                                            .send(Command::LoadCommitFileDiff {
+                                                id,
+                                                hash,
+                                                file,
+                                            })
+                                            .await;
+                                    }
+                                }
                             }
                         }
                         ui::screens::workspace::WorkspaceHit::BranchesPane(idx) => {
